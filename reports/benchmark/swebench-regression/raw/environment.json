@@ -1,7 +1,7 @@
 {
-  "cwd": "/root/codex-tool-runtime-mcp",
+  "cwd": "/home/user/coding-tools-mcp",
   "executables": {
-    "docker": null,
+    "docker": "/usr/bin/docker",
     "git": "/usr/bin/git"
   },
   "github": {
@@ -18,7 +18,7 @@
     "docker": "7.1.0",
     "swebench": "4.1.0"
   },
-  "platform": "Linux-6.18.24-talos-x86_64-with-glibc2.36",
-  "python": "3.11.14 (main, Feb 20 2026, 09:55:14) [GCC 12.2.0]",
-  "python_executable": "/root/venv/bin/python3"
+  "platform": "Linux-6.18.5-x86_64-with-glibc2.39",
+  "python": "3.11.15 (main, Mar  3 2026, 09:26:23) [GCC 13.3.0]",
+  "python_executable": "/usr/local/bin/python3"
 }

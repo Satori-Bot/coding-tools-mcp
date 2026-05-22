@@ -1,0 +1,10 @@
+{
+  "command": [
+    "/usr/bin/docker",
+    "version"
+  ],
+  "ran": true,
+  "returncode": 1,
+  "stderr": "failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory\n",
+  "stdout": "Client: Docker Engine - Community\n Version:           29.3.1\n API version:       1.54\n Go version:        go1.25.8\n Git commit:        c2be9cc\n Built:             Wed Mar 25 16:13:43 2026\n OS/Arch:           linux/amd64\n Context:           default\n"
+}
