@@ -253,6 +253,8 @@ class RuntimeHelperTests(unittest.TestCase):
                 ["git", "init", "-q"],
                 ["git", "config", "user.email", "test@example.invalid"],
                 ["git", "config", "user.name", "Runtime Test"],
+                ["git", "config", "commit.gpgsign", "false"],
+                ["git", "config", "tag.gpgsign", "false"],
                 ["git", "add", "-A"],
                 ["git", "commit", "-q", "-m", "initial commit"],
             ):

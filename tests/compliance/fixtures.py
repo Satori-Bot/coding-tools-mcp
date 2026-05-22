@@ -98,6 +98,8 @@ def init_git(root: Path) -> None:
     run(["git", "init", "-q"], root)
     run(["git", "config", "user.email", "compliance@example.invalid"], root)
     run(["git", "config", "user.name", "Compliance Runner"], root)
+    run(["git", "config", "commit.gpgsign", "false"], root)
+    run(["git", "config", "tag.gpgsign", "false"], root)
     run(["git", "add", "-A"], root)
     run(["git", "commit", "-q", "-m", "baseline fixture"], root)
 
