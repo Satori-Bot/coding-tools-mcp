@@ -1,26 +1,26 @@
 # Compliance Report
 
 - profile: `coding-tools-mcp-v0.1`
-- commit: `7c18d6875cf15795d6bc34d3ac9d770e29272893`
-- suite: `all`
+- commit: `af85abd4882d027a531a1d17dfede254e18aa778`
+- suite: `dogfood`
 - passed: `true`
-- tests_run: `71`
-- elapsed_seconds: `51.042`
+- tests_run: `1`
+- elapsed_seconds: `0.749`
 
 ## Required Tools
 
-- `read_file`: passed
-- `list_dir`: passed
-- `list_files`: passed
-- `search_text`: passed
-- `apply_patch`: passed
-- `exec_command`: passed
-- `write_stdin`: passed
-- `kill_session`: passed
-- `git_status`: passed
-- `git_diff`: passed
-- `request_permissions`: passed
-- `view_image`: passed
+- `read_file`: not_measured
+- `list_dir`: not_measured
+- `list_files`: not_measured
+- `search_text`: not_measured
+- `apply_patch`: not_measured
+- `exec_command`: not_measured
+- `write_stdin`: not_measured
+- `kill_session`: not_measured
+- `git_status`: not_measured
+- `git_diff`: not_measured
+- `request_permissions`: not_measured
+- `view_image`: not_measured
 
 ## Failures
 

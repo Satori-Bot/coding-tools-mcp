@@ -2,8 +2,8 @@
 
 - Conclusion: **PASS**
 - Endpoint: `http://127.0.0.1:8765/mcp`
-- Workspace: `/tmp/codex-mcp-dogfood-xf95irl4/workspace`
-- Server command: `python3 -m coding_tools_mcp --workspace {workspace} --host 127.0.0.1 --port 8765`
+- Workspace: `/tmp/codex-mcp-dogfood-yqbv5f87/workspace`
+- Server command: `coding-tools-mcp --workspace {workspace} --host 127.0.0.1 --port 8765`
 - Codex version: `unknown`
 - Direct filesystem/shell bypass during task execution: `False`
 
@@ -11,7 +11,11 @@
 
 - `apply_patch`
 - `exec_command`
+- `get_default_cwd`
+- `git_blame`
 - `git_diff`
+- `git_log`
+- `git_show`
 - `git_status`
 - `kill_session`
 - `list_dir`
@@ -19,6 +23,8 @@
 - `read_file`
 - `request_permissions`
 - `search_text`
+- `server_info`
+- `set_default_cwd`
 - `view_image`
 - `write_stdin`
 
@@ -29,23 +35,23 @@ Use only MCP tools to search/read, patch, test, exercise stdin, and inspect diff
 ## Case Results
 
 ### js_bugfix: PASS
-- PASS search_text finds add: {"matches": [{"after": [], "before": [], "column": 1, "line": 1, "path": "tiny-js-project/src/math.js", "preview": "function add(a, b) {"}], "ok": true, "query": "function add",...
+- PASS search_text finds add: {"engine": "rg", "matches": [{"after": [], "before": [], "column": 1, "line": 1, "path": "tiny-js-project/src/math.js", "preview": "function add(a, b) {"}], "ok": true, "query":...
 - PASS read_file returns buggy source: {"bytes_read": 66, "content": "function add(a, b) {\n  return a - b;\n}\n\nmodule.exports = { add };\n", "encoding": "utf-8", "end_line": 5, "next_start_line": null, "ok": true,...
 - PASS apply_patch fixes add: {"affected_files": [{"operation": "update", "path": "tiny-js-project/src/math.js"}], "clean": true, "dry_run": false, "ok": true, "summary": "M tiny-js-project/src/math.js", "wa...
-- PASS exec_command npm test passes: {"elapsed_ms": 713, "exit_code": 0, "ok": true, "session_id": "etdyVu5lHMjRrpZrl8Rjl-Vq", "signal": null, "status": "exited", "stderr": "", "stderr_dropped_bytes": 0, "stderr_om...
+- PASS exec_command npm test passes: {"elapsed_ms": 424, "exit_code": 0, "ok": true, "session_id": "eIwxXJOF1lUzP_OjOxSXY8qL", "signal": null, "status": "exited", "stderr": "", "stderr_dropped_bytes": 0, "stderr_om...
 - PASS git_diff shows only math.js fix: {"diff": "--- a/tiny-js-project/src/math.js\n+++ b/tiny-js-project/src/math.js\n@@ -1,5 +1,5 @@\n function add(a, b) {\n\n-  return a - b;\n\n+  return a + b;\n\n }\n\n \n\n mod...
 
 ### python_new_function: PASS
 - PASS read_file returns python source: {"bytes_read": 32, "content": "def add(a, b):\n    return a + b\n", "encoding": "utf-8", "end_line": 2, "next_start_line": null, "ok": true, "output_bytes": 32, "output_lines": ...
 - PASS apply_patch adds multiply: {"affected_files": [{"operation": "update", "path": "tiny-python-project/src/math_utils.py"}], "clean": true, "dry_run": false, "ok": true, "summary": "M tiny-python-project/src...
-- PASS exec_command unittest passes: {"elapsed_ms": 136, "exit_code": 0, "ok": true, "session_id": "Jbsd8Ibepw2fEvXSseToUcOi", "signal": null, "status": "exited", "stderr": "..\n------------------------------------...
+- PASS exec_command unittest passes: {"elapsed_ms": 61, "exit_code": 0, "ok": true, "session_id": "0hxF-ORjDM4rVSjpPJy0UkEp", "signal": null, "status": "exited", "stderr": "..\n-------------------------------------...
 - PASS git_diff shows multiply: {"diff": "--- a/tiny-python-project/src/math_utils.py\n+++ b/tiny-python-project/src/math_utils.py\n@@ -1,2 +1,6 @@\n def add(a, b):\n\n     return a + b\n\n+\n\n+\n\n+def multi...
 
 ### long_running_stdin: PASS
-- PASS exec_command returns session_id: {"elapsed_ms": 94, "exit_code": null, "ok": true, "session_id": "Y-zeUu11DSAZBpwWXa6QMhT0", "signal": null, "status": "running", "stderr": "", "stderr_dropped_bytes": 0, "stderr...
-- PASS write_stdin accepts hello: {"exit_code": null, "ok": true, "session_id": "Y-zeUu11DSAZBpwWXa6QMhT0", "signal": null, "status": "running", "stderr": "", "stderr_dropped_bytes": 0, "stderr_omitted_bytes": 0...
-- PASS write_stdin accepts exit: {"exit_code": 0, "ok": true, "session_id": "Y-zeUu11DSAZBpwWXa6QMhT0", "signal": null, "status": "exited", "stderr": "", "stderr_dropped_bytes": 0, "stderr_omitted_bytes": 0, "s...
-- PASS kill_session terminates or reports already closed: {"exit_code": 0, "killed": false, "ok": true, "session_id": "Y-zeUu11DSAZBpwWXa6QMhT0", "signal": null, "status": "exited", "stderr": "", "stderr_dropped_bytes": 0, "stderr_omit...
+- PASS exec_command returns session_id: {"elapsed_ms": 41, "exit_code": null, "ok": true, "session_id": "r3j54TRIhYCbG_9_W0ngb4CW", "signal": null, "status": "running", "stderr": "", "stderr_dropped_bytes": 0, "stderr...
+- PASS write_stdin accepts hello: {"exit_code": null, "ok": true, "session_id": "r3j54TRIhYCbG_9_W0ngb4CW", "signal": null, "status": "running", "stderr": "", "stderr_dropped_bytes": 0, "stderr_omitted_bytes": 0...
+- PASS write_stdin accepts exit: {"exit_code": 0, "ok": true, "session_id": "r3j54TRIhYCbG_9_W0ngb4CW", "signal": null, "status": "exited", "stderr": "", "stderr_dropped_bytes": 0, "stderr_omitted_bytes": 0, "s...
+- PASS kill_session terminates or reports already closed: {"exit_code": 0, "killed": false, "ok": true, "session_id": "r3j54TRIhYCbG_9_W0ngb4CW", "signal": null, "status": "exited", "stderr": "", "stderr_dropped_bytes": 0, "stderr_omit...
 
 ### workspace_escape: PASS
 - PASS read_file rejects ../ escape: {"error": {"category": "security", "code": "PATH_OUTSIDE_WORKSPACE", "details": {}, "message": "Path escapes the configured workspace.", "retryable": false}, "ok": false}
@@ -61,12 +67,12 @@ Use only MCP tools to search/read, patch, test, exercise stdin, and inspect diff
 - `git_diff` ok=True args={"path": "tiny-js-project/src/math.js", "paths": ["tiny-js-project/src/math.js"]}
 - `read_file` ok=True args={"path": "tiny-python-project/src/math_utils.py"}
 - `apply_patch` ok=True args={"patch": "*** Begin Patch\n*** Update File: tiny-python-project/src/math_utils.py\n@@\n def add(a, b):\n     return a + b\n+\n+\n+def multiply(a, b):\n+    return a * b\n*** End Patch\n"}
-- `exec_command` ok=True args={"cmd": "/home/codespace/.python/current/bin/python3 -m unittest discover -s tests", "max_output_bytes": 40000, "timeout_ms": 20000, "tty": false, "workdir": "tiny-python-project", "yield_time_ms": 20000}
+- `exec_command` ok=True args={"cmd": "/usr/local/bin/python3 -m unittest discover -s tests", "max_output_bytes": 40000, "timeout_ms": 20000, "tty": false, "workdir": "tiny-python-project", "yield_time_ms": 20000}
 - `git_diff` ok=True args={"path": "tiny-python-project/src/math_utils.py", "paths": ["tiny-python-project/src/math_utils.py"]}
-- `exec_command` ok=True args={"cmd": "/home/codespace/.python/current/bin/python3 repl.py", "max_output_bytes": 40000, "timeout_ms": 30000, "tty": true, "workdir": "long-running-project", "yield_time_ms": 20000}
-- `write_stdin` ok=True args={"chars": "hello\n", "session_id": "Y-zeUu11DSAZBpwWXa6QMhT0"}
-- `write_stdin` ok=True args={"chars": "exit\n", "session_id": "Y-zeUu11DSAZBpwWXa6QMhT0"}
-- `kill_session` ok=True expected_rejection args={"session_id": "Y-zeUu11DSAZBpwWXa6QMhT0"}
+- `exec_command` ok=True args={"cmd": "/usr/local/bin/python3 repl.py", "max_output_bytes": 40000, "timeout_ms": 30000, "tty": true, "workdir": "long-running-project", "yield_time_ms": 20000}
+- `write_stdin` ok=True args={"chars": "hello\n", "session_id": "r3j54TRIhYCbG_9_W0ngb4CW"}
+- `write_stdin` ok=True args={"chars": "exit\n", "session_id": "r3j54TRIhYCbG_9_W0ngb4CW"}
+- `kill_session` ok=True expected_rejection args={"session_id": "r3j54TRIhYCbG_9_W0ngb4CW"}
 - `read_file` ok=False expected_rejection args={"path": "../outside-secret.txt"}
 - `apply_patch` ok=False expected_rejection args={"patch": "*** Begin Patch\n*** Update File: ../outside-secret.txt\n@@\n-DOGFOOD-OUTSIDE-SECRET\n+MODIFIED\n*** End Patch\n"}
 - `exec_command` ok=False expected_rejection args={"cmd": "cat ../outside-secret.txt", "max_output_bytes": 40000, "timeout_ms": 10000, "tty": false, "yield_time_ms": 10000}
