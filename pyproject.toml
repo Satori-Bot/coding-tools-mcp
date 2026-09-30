@@ -19,7 +19,7 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://github.com/xyTom/coding-tools-mcp"
-Documentation = "https://github.com/coding-tools-mcp/docs"
+Documentation = "https://coding-tools-mcp.github.io/docs/"
 Source = "https://github.com/xyTom/coding-tools-mcp"
 Issues = "https://github.com/xyTom/coding-tools-mcp/issues"
 

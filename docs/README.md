@@ -1,6 +1,10 @@
 # Core documentation map
 
-Human-oriented tutorials, client setup, migrations, and troubleshooting are maintained in the standalone documentation repository:
+Human-oriented tutorials, client setup, migrations, and troubleshooting are published at:
+
+https://coding-tools-mcp.github.io/docs/
+
+Their source is maintained in:
 
 https://github.com/coding-tools-mcp/docs
 
@@ -33,7 +37,8 @@ These documents stay with the source because tests and releases validate them ag
 ## Ecosystem
 
 - [Desktop application](https://github.com/coding-tools-mcp/desktop)
-- [Public documentation](https://github.com/coding-tools-mcp/docs)
+- [Public documentation](https://coding-tools-mcp.github.io/docs/)
+- [Documentation source](https://github.com/coding-tools-mcp/docs)
 - [Tunnel integrations](../integrations/tunnels/README.md)
 - [npm launcher](../packages/npm-launcher/README.md)
 - [Cloudflare sandbox control](../infra/cloudflare/sandbox-control/README.md)
