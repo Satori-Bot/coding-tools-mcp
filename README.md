@@ -113,13 +113,19 @@ authenticated Cloudflare Tunnel. Ephemeral compute, no server of your own.
 
 **5. Drive it from a GUI.**
 
+The desktop application now lives in its own repository:
+[coding-tools-mcp/desktop](https://github.com/coding-tools-mcp/desktop).
+
 ```bash
-python -m pip install "coding-tools-mcp[desktop]"
+git clone https://github.com/coding-tools-mcp/desktop.git
+cd desktop
+python -m pip install -e .
 coding-tools-mcp-desktop
 ```
 
 Per-workspace profiles, server and tunnel start/stop, credential setup with
-clipboard helpers, live health checks. English and 简体中文.
+clipboard helpers, live health checks. English and 简体中文. The desktop app is
+versioned and released independently from the core runtime.
 
 **6. Keep an interactive command alive.** `exec_command` starts a REPL or
 debugger under a real PTY; `write_stdin` feeds it across turns; `read_output`
@@ -196,7 +202,8 @@ measured. More: [COMPLIANCE.md](COMPLIANCE.md) · [BENCHMARK.md](BENCHMARK.md) �
 
 | | |
 | --- | --- |
-| Documentation map | [Browse docs by topic](docs/README.md) |
+| Public documentation | [coding-tools-mcp/docs](https://github.com/coding-tools-mcp/docs) |
+| Core documentation map | [Source-coupled reference and evidence](docs/README.md) |
 | Getting started | [Quickstart](docs/quickstart.md) · [Client configuration](docs/mcp-client-config.md) · [Troubleshooting](docs/troubleshooting.md) |
 | Remote & sandboxed | [Remote MCP](docs/remote-mcp.md) · [Docker sandbox](docs/docker.md) · [Cloud sandbox worker](infra/cloudflare/sandbox-control/README.md) |
 | Tools & contract | [Tools and schemas](docs/tools-and-schemas.md) · [Runtime contract](docs/runtime-contract-v0.3.md) · [Migrating to 0.3](docs/migration-0.3.md) · [Permission modes](docs/permission-modes.md) |

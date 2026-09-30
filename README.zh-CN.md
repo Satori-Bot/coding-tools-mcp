@@ -103,13 +103,18 @@ PR，用完即毁。→ [docs/docker.md](docs/docker.md)
 
 **5. 用图形界面操作。**
 
+桌面应用已经拆到独立仓库：
+[coding-tools-mcp/desktop](https://github.com/coding-tools-mcp/desktop)。
+
 ```bash
-python -m pip install "coding-tools-mcp[desktop]"
+git clone https://github.com/coding-tools-mcp/desktop.git
+cd desktop
+python -m pip install -e .
 coding-tools-mcp-desktop
 ```
 
 按工作区管理配置、一键启停服务器与隧道、凭证设置带剪贴板助手、实时健康
-检查。支持英文与简体中文。
+检查。支持英文与简体中文。Desktop 与核心 runtime 现在独立版本、独立发布。
 
 **6. 保持一个活着的交互式命令。**`exec_command` 在真实 PTY 下启动 REPL 或
 调试器；`write_stdin` 跨轮次喂输入；`read_output` 分页读取长输出；
@@ -178,7 +183,8 @@ SWE-bench 榜单成绩——[docs/swe-bench.md](docs/swe-bench.md) 写明了测�
 
 | | |
 | --- | --- |
-| 文档导航 | [按主题浏览文档](docs/README.md) |
+| 公共文档 | [coding-tools-mcp/docs](https://github.com/coding-tools-mcp/docs) |
+| 核心文档导航 | [与源码强关联的 reference 与 evidence](docs/README.md) |
 | 上手 | [快速开始](docs/quickstart.md) · [客户端配置](docs/mcp-client-config.md) · [排障](docs/troubleshooting.md) |
 | 远程与沙箱 | [Remote MCP](docs/remote-mcp.md) · [Docker 沙箱](docs/docker.md) · [云沙箱 Worker](infra/cloudflare/sandbox-control/README.md) |
 | 工具与契约 | [工具与 Schema](docs/tools-and-schemas.md) · [运行时契约](docs/runtime-contract-v0.3.md) · [迁移到 0.3](docs/migration-0.3.md) · [权限模式](docs/permission-modes.md) |

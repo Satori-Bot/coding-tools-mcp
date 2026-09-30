@@ -107,9 +107,6 @@ jobs:
               raise SystemExit(f"expected one wheel, found {wheel}")
           required = {
               "coding_tools_mcp/__init__.py",
-              "mcp_desktop_client/app.py",
-              "mcp_desktop_client/locales/app_zh_CN.qm",
-              "mcp_desktop_client/locales/app_zh_CN.ts",
           }
           with zipfile.ZipFile(wheel[0]) as archive:
               names = set(archive.namelist())
@@ -119,7 +116,7 @@ jobs:
               entry_points = archive.read(
                   next(name for name in names if name.endswith("entry_points.txt"))
               ).decode()
-              for command in ("coding-tools-mcp", "coding-tools-mcp-desktop"):
+              for command in ("coding-tools-mcp",):
                   if command not in entry_points:
                       raise SystemExit(f"wheel entry point is missing: {command}")
           PY

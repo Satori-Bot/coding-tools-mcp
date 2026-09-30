@@ -1,16 +1,14 @@
-# Documentation map
+# Core documentation map
 
-The documentation keeps stable file paths for existing links, while this index provides the logical structure for humans and coding agents.
+Human-oriented tutorials, client setup, migrations, and troubleshooting are maintained in the standalone documentation repository:
 
-## Get started and connect clients
+https://github.com/coding-tools-mcp/docs
 
-- [Quickstart](quickstart.md)
-- [MCP client configuration](mcp-client-config.md)
-- [Remote MCP](remote-mcp.md)
-- [Docker](docker.md)
-- [Troubleshooting](troubleshooting.md)
+Existing user-guide paths in this directory are kept as short compatibility pointers so old GitHub links continue to resolve.
 
 ## Runtime and protocol reference
+
+These documents stay with the source because tests and releases validate them against the implementation:
 
 - [Tools and schemas](tools-and-schemas.md)
 - [Runtime contract v0.3](runtime-contract-v0.3.md)
@@ -19,15 +17,6 @@ The documentation keeps stable file paths for existing links, while this index p
 - [Telemetry](telemetry.md)
 - [Security boundary](security-boundary.md)
 - [Limitations](limitations.md)
-
-## Guides and integration
-
-- [Embedding](embedding.md)
-- [Exec command recipes](exec-command-recipes.md)
-- [Exec troubleshooting](troubleshooting-exec.md)
-- [Migration to 0.3](migration-0.3.md)
-- [Migration to 0.5](migration-0.5.md)
-- [Profile](profile.md)
 
 ## Engineering and evaluation
 
@@ -39,12 +28,12 @@ The documentation keeps stable file paths for existing links, while this index p
 - [Dogfood](dogfood.md)
 - [SWE-bench](swe-bench.md)
 - [SWE-bench supporting material](swebench/README.md)
+- [Contract profile](profile.md)
 
-## Component-local documentation
+## Ecosystem
 
-Some documentation belongs with the component it describes:
-
-- [Desktop client](../apps/desktop-client/README.md)
+- [Desktop application](https://github.com/coding-tools-mcp/desktop)
+- [Public documentation](https://github.com/coding-tools-mcp/docs)
 - [Tunnel integrations](../integrations/tunnels/README.md)
 - [npm launcher](../packages/npm-launcher/README.md)
 - [Cloudflare sandbox control](../infra/cloudflare/sandbox-control/README.md)

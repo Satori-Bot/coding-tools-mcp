@@ -58,7 +58,7 @@ class RequiredDocsTests(unittest.TestCase):
         missing = [path for path in required_paths if not (ROOT / path).is_file()]
         self.assertEqual(missing, [])
 
-    def test_docs_contain_required_operational_topics(self) -> None:
+    def test_docs_contain_required_operational_topics_and_migration_pointers(self) -> None:
         expectations = {
             "README.md": ["Quickstart", "Safety Boundary", "Dogfood", "SWE-bench"],
             "SECURITY.md": ["Linux Landlock", "Environment Scrubbing", "Command Lifecycle"],
@@ -67,14 +67,19 @@ class RequiredDocsTests(unittest.TestCase):
             "docs/ci-and-tests.md": ["make ci", "workflow", "swebench-lite"],
             "docs/dogfood.md": ["MCP-Only Rule", "view_image", "Direct filesystem/shell bypass"],
             "docs/swe-bench.md": ["Official attempt report", "BLOCKED", "sympy__sympy-12419"],
-            "docs/troubleshooting.md": ["SANDBOX_UNAVAILABLE", "MCP-Protocol-Version"],
             "docs/permission-modes.md": ["safe", "trusted", "dangerous"],
-            "docs/exec-command-recipes.md": ["MAVEN_USER_HOME", "npm_config_cache", "GOCACHE", "CARGO_HOME"],
-            "docs/troubleshooting-exec.md": ["DEV_NULL_DENIED", "DNS_RESOLUTION_FAILED", "OUTPUT_TRUNCATED"],
             "docs/security-boundary.md": ["Landlock", "external container or VM"],
-            "docs/docker.md": ["permission-mode trusted", "permission_mode=dangerous", "mvn -version"],
             "docs/competitive-analysis.md": ["Claude Code", "Aider", "OpenHands", "Cline"],
-            "docs/migration-0.3.md": ["Breaking changes", "server/discover", "one trust domain"],
+            "docs/quickstart.md": ["coding-tools-mcp/docs", "content/docs/getting-started/index.mdx"],
+            "docs/mcp-client-config.md": ["coding-tools-mcp/docs", "content/docs/clients/index.mdx"],
+            "docs/remote-mcp.md": ["coding-tools-mcp/docs", "content/docs/guides/remote-access.mdx"],
+            "docs/docker.md": ["coding-tools-mcp/docs", "content/docs/guides/docker-sandbox.mdx"],
+            "docs/embedding.md": ["coding-tools-mcp/docs", "content/docs/guides/embedding.mdx"],
+            "docs/exec-command-recipes.md": ["coding-tools-mcp/docs", "content/docs/guides/exec-command-recipes.mdx"],
+            "docs/troubleshooting.md": ["coding-tools-mcp/docs", "content/docs/troubleshooting/index.mdx"],
+            "docs/troubleshooting-exec.md": ["coding-tools-mcp/docs", "content/docs/troubleshooting/execution.mdx"],
+            "docs/migration-0.3.md": ["coding-tools-mcp/docs", "content/docs/migrations/0.3.mdx"],
+            "docs/migration-0.5.md": ["coding-tools-mcp/docs", "content/docs/migrations/0.5.mdx"],
         }
         for rel_path, needles in expectations.items():
             text = (ROOT / rel_path).read_text(encoding="utf-8")
