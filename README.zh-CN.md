@@ -65,8 +65,8 @@ Gemini CLI 或 Cline——各家的 JSON 配置完全相同（偏好 Node 的话
 上同时提供：完整支持 MCP `2026-07-28`（对外声明的 capability 只有 `tools`），
 同时继续支持握手时代的 `2025-11-25` 与 `2025-06-18`；两代都没有会话。
 一行安装脚本、各客户端的完整接入指南和排障见
-[快速开始](https://coding-tools-mcp.github.io/docs/getting-started/) 与
-[客户端配置](https://coding-tools-mcp.github.io/docs/clients/)。
+[快速开始](https://coding-tools-mcp.github.io/docs/zh-CN/getting-started/) 与
+[客户端配置](https://coding-tools-mcp.github.io/docs/zh-CN/clients/)。
 
 ## 七个值得一试的玩法
 
@@ -83,7 +83,7 @@ CODING_TOOLS_MCP_AUTH_MODE=bearer ./integrations/tunnels/tunnel.sh cloudflared /
 Tunnel）。手机上打开 claude.ai，指向 `https://<tunnel-host>/mcp`，就能驱动家里的
 工作站。ChatGPT 与 Grok 通过各自的连接器设置同样接入。内置 Bearer token 与
 OAuth 2.1 + PKCE（含 RFC 7591 动态注册）。
-→ [Remote MCP](https://coding-tools-mcp.github.io/docs/guides/remote-access/)
+→ [Remote MCP](https://coding-tools-mcp.github.io/docs/zh-CN/guides/remote-access/)
 
 **3. 在一次性 Docker 沙箱里放心跑可疑代码。**
 
@@ -93,7 +93,7 @@ docker run --rm --init -it -p 8765:8765 -v "$PWD:/workspace" coding-tools-mcp-sa
 ```
 
 容器化的服务器，工具链和缓存都预配好——放心把 agent 指向一个来路不明的
-PR，用完即毁。→ [Docker 沙箱](https://coding-tools-mcp.github.io/docs/guides/docker-sandbox/)
+PR，用完即毁。→ [Docker 沙箱](https://coding-tools-mcp.github.io/docs/zh-CN/guides/docker-sandbox/)
 
 **4. 一个 MCP 调用，起一台云沙箱。**内置的
 [Cloudflare Worker 控制面](infra/cloudflare/sandbox-control/README.md) 把
@@ -122,7 +122,7 @@ coding-tools-mcp-desktop
 
 **7. 给自研 agent 装上生产级的"手"。**用 Anthropic SDK 或任何框架搭 agent
 循环？别再手写文件和执行工具——对着这个服务器讲 MCP，整个安全边界直接
-继承。→ [嵌入指南](https://coding-tools-mcp.github.io/docs/guides/embedding/)
+继承。→ [嵌入指南](https://coding-tools-mcp.github.io/docs/zh-CN/guides/embedding/)
 
 ## 工具目录
 
@@ -183,13 +183,13 @@ SWE-bench 榜单成绩——[docs/swe-bench.md](docs/swe-bench.md) 写明了测�
 
 | | |
 | --- | --- |
-| 公共文档 | [coding-tools-mcp.github.io/docs](https://coding-tools-mcp.github.io/docs/) |
+| 公共文档 | [简体中文文档](https://coding-tools-mcp.github.io/docs/zh-CN/) |
 | 核心文档导航 | [与源码强关联的 reference 与 evidence](docs/README.md) |
-| 上手 | [快速开始](https://coding-tools-mcp.github.io/docs/getting-started/) · [客户端配置](https://coding-tools-mcp.github.io/docs/clients/) · [排障](https://coding-tools-mcp.github.io/docs/troubleshooting/) |
-| 远程与沙箱 | [Remote MCP](https://coding-tools-mcp.github.io/docs/guides/remote-access/) · [Docker 沙箱](https://coding-tools-mcp.github.io/docs/guides/docker-sandbox/) · [云沙箱 Worker](infra/cloudflare/sandbox-control/README.md) |
-| 工具与契约 | [工具与 Schema](docs/tools-and-schemas.md) · [运行时契约](docs/runtime-contract-v0.3.md) · [迁移到 0.3](https://coding-tools-mcp.github.io/docs/migrations/0.3/) · [权限模式](docs/permission-modes.md) |
-| 命令执行 | [Exec 配方](https://coding-tools-mcp.github.io/docs/guides/exec-command-recipes/) · [Exec 排障](https://coding-tools-mcp.github.io/docs/troubleshooting/execution/) |
-| 集成 | [嵌入指南](https://coding-tools-mcp.github.io/docs/guides/embedding/) · [npm 启动器](packages/npm-launcher/README.md) |
+| 上手 | [快速开始](https://coding-tools-mcp.github.io/docs/zh-CN/getting-started/) · [客户端配置](https://coding-tools-mcp.github.io/docs/zh-CN/clients/) · [排障](https://coding-tools-mcp.github.io/docs/zh-CN/troubleshooting/) |
+| 远程与沙箱 | [Remote MCP](https://coding-tools-mcp.github.io/docs/zh-CN/guides/remote-access/) · [Docker 沙箱](https://coding-tools-mcp.github.io/docs/zh-CN/guides/docker-sandbox/) · [云沙箱 Worker](infra/cloudflare/sandbox-control/README.md) |
+| 工具与契约 | [工具与 Schema](docs/tools-and-schemas.md) · [运行时契约](docs/runtime-contract-v0.3.md) · [迁移到 0.3](https://coding-tools-mcp.github.io/docs/zh-CN/migrations/0.3/) · [权限模式](docs/permission-modes.md) |
+| 命令执行 | [Exec 配方](https://coding-tools-mcp.github.io/docs/zh-CN/guides/exec-command-recipes/) · [Exec 排障](https://coding-tools-mcp.github.io/docs/zh-CN/troubleshooting/execution/) |
+| 集成 | [嵌入指南](https://coding-tools-mcp.github.io/docs/zh-CN/guides/embedding/) · [npm 启动器](packages/npm-launcher/README.md) |
 | 安全与质量 | [安全策略](SECURITY.md) · [安全边界](docs/security-boundary.md) · [CI 与测试](docs/ci-and-tests.md) · [已知限制](docs/limitations.md) · [竞品分析](docs/competitive-analysis.md) |
 
 ## 开发
