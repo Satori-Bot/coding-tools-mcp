@@ -410,6 +410,7 @@ def prepare_workspace(base_dir: Path | None = None) -> tuple[Path, Path]:
 
 
 def start_server(command: str | None, workspace: Path, endpoint: str) -> subprocess.Popen[bytes] | None:
+    """Launch the formatted server command with local telemetry defaults, if supplied."""
     if not command:
         return None
     env = local_server_env()

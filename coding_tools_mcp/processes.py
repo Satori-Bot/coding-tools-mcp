@@ -57,6 +57,7 @@ def terminate_process_group(
     *,
     force: bool = False,
 ) -> None:
+    """Stop a process tree or group, escalating or falling back to direct-child cleanup."""
     if os.name == "nt":
         # CTRL_BREAK needs a console shared with the child, which a stdio
         # server usually lacks, and process.terminate() only ends cmd.exe.
@@ -199,6 +200,7 @@ class CommandRun:
 
     @property
     def stdin_closed(self) -> bool:
+        """Return whether piped stdin is unavailable; an attached PTY remains writable."""
         return self.pty_master_fd is None and (
             self._stdin_closed or self.process.stdin is None or self.process.stdin.closed
         )
@@ -282,6 +284,7 @@ class CommandRun:
                 pass
 
     def snapshot_since_cursor(self, max_output_bytes: int) -> dict[str, Any]:
+        """Advance output cursors and return bounded stream tails with status and loss metadata."""
         self.refresh_status()
         with self.lock:
             stdout_omitted = max(0, self.stdout_start_offset - self.stdout_cursor)
@@ -351,6 +354,7 @@ class CommandRun:
         return "running" if self.process.poll() is None else "exited"
 
     def operation_outcome(self, status: str | None = None) -> str:
+        """Classify the command outcome, including timeouts and intentional client kills."""
         status = self.status() if status is None else status
         return command_outcome(
             status,
@@ -361,6 +365,7 @@ class CommandRun:
         )
 
     def refresh_status(self) -> None:
+        """Enforce the deadline and collect exit state, draining readers and closing stdin."""
         if self.timeout_at is not None and not self.timed_out and self.process.poll() is None and time.time() >= self.timeout_at:
             self.timed_out = True
             terminate_process_group(self.process, signal.SIGTERM)

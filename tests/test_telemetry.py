@@ -704,6 +704,7 @@ class BreakerBlockTests(unittest.TestCase):
     """A breaker refusal is not a tool failure: no handler ran."""
 
     def test_a_refusal_loop_is_counted_as_blocks_not_errors(self) -> None:
+        """Verify breaker refusals have separate counters and consume no tool-error event budget."""
         # One client that ignored REPEATED_CALL_BLOCKED and resent a bad
         # read_output ~2000 times made v0.5.0's dashboard read 45% errors.
         sender = _CapturingSender()
@@ -738,6 +739,7 @@ class BreakerBlockTests(unittest.TestCase):
         self.assertEqual(end["errors_dropped"], 0)
 
     def test_a_refusal_neither_extends_nor_clears_a_failure_streak(self) -> None:
+        """Verify breaker refusals neither increment nor reset the underlying failure streak."""
         session = SessionTelemetry(permission_mode="safe")
         for _ in range(2):
             session.record_tool_call("read_output", ok=False, error_code="INVALID_ARGUMENT", duration_ms=1, truncated=False)
@@ -758,6 +760,7 @@ class DocumentationDriftTests(unittest.TestCase):
         self.assertIn(f"max {ERROR_EVENTS_PER_SESSION} per session", doc)
 
     def test_documented_properties_match_emitted_properties(self) -> None:
+        """Verify emitted fingerprint and outcome properties are covered by telemetry documentation."""
         doc = (Path(__file__).resolve().parents[1] / "docs" / "telemetry.md").read_text(encoding="utf-8")
         by_name = _events_by_name(_run_probe_session())
         start = _properties(by_name["session_start"][0])
@@ -775,11 +778,13 @@ class DocumentationDriftTests(unittest.TestCase):
 
 class _FakeDistribution:
     def __init__(self, direct_url: object, *, package_dir: Path | None = None, broken: bool = False) -> None:
+        """Configure synthetic install metadata, package location, and optional read failure."""
         self._direct_url = direct_url
         self._package_dir = package_dir if package_dir is not None else telemetry._PACKAGE_DIR
         self._broken = broken
 
     def read_text(self, name: str) -> str | None:
+        """Return synthetic direct_url metadata or simulate absent or corrupt metadata."""
         if self._broken:
             raise RuntimeError("corrupt metadata")
         assert name == "direct_url.json"
@@ -788,14 +793,17 @@ class _FakeDistribution:
         return json.dumps(self._direct_url)
 
     def locate_file(self, relative: str) -> Path:
+        """Resolve a distribution-relative path beside the synthetic package directory."""
         return self._package_dir.parent / relative
 
 
 class BuildFingerprintTests(unittest.TestCase):
     def install_kind_for(self, distribution: object) -> str:
+        """Classify an installation using the supplied synthetic distribution metadata."""
         from importlib import metadata
 
         def fake(name: str) -> object:
+            """Return the expected distribution or simulate a package absent from installed metadata."""
             self.assertEqual(name, "coding-tools-mcp")
             if distribution is None:
                 raise metadata.PackageNotFoundError(name)
@@ -805,6 +813,7 @@ class BuildFingerprintTests(unittest.TestCase):
             return telemetry.install_kind()
 
     def test_install_kind_for_each_way_of_installing(self) -> None:
+        """Verify source, index, editable, local-directory, and VCS installations are classified."""
         cases = {
             "source": None,
             "index": _FakeDistribution(None),
@@ -819,18 +828,22 @@ class BuildFingerprintTests(unittest.TestCase):
                 self.assertEqual(self.install_kind_for(distribution), expected)
 
     def test_a_local_archive_install_is_local(self) -> None:
+        """Verify a local wheel archive is classified as a local installation."""
         archive = _FakeDistribution({"url": "file:///tmp/ctm-0.5.0-py3-none-any.whl", "archive_info": {}})
         self.assertEqual(self.install_kind_for(archive), "local")
 
     def test_an_installed_copy_shadowed_by_a_checkout_is_source(self) -> None:
+        """Verify a checkout shadowing installed metadata is classified as source."""
         with tempfile.TemporaryDirectory() as tmp:
             elsewhere = _FakeDistribution(None, package_dir=Path(tmp) / "coding_tools_mcp")
             self.assertEqual(self.install_kind_for(elsewhere), "source")
 
     def test_unreadable_metadata_is_unknown_and_never_raises(self) -> None:
+        """Verify corrupt distribution metadata yields unknown without raising."""
         self.assertEqual(self.install_kind_for(_FakeDistribution(None, broken=True)), "unknown")
 
     def test_build_id_is_a_stable_hash_of_the_package_sources(self) -> None:
+        """Verify build IDs deterministically hash sorted source paths and bytes."""
         saved = telemetry._build_id
         try:
             telemetry._build_id = None
@@ -851,6 +864,7 @@ class BuildFingerprintTests(unittest.TestCase):
         self.assertEqual(first, digest.hexdigest()[:12])
 
     def test_build_id_changes_with_the_sources_and_degrades_to_unknown(self) -> None:
+        """Verify build IDs track source changes, cache within a process, and tolerate missing files."""
         saved = telemetry._build_id
         try:
             with tempfile.TemporaryDirectory() as tmp:
@@ -876,6 +890,7 @@ class BuildFingerprintTests(unittest.TestCase):
         self.assertNotEqual(original, modified)
 
     def test_every_event_carries_only_the_two_fingerprint_labels(self) -> None:
+        """Verify events expose bounded install/build labels without package paths or URLs."""
         sender = _run_probe_session()
         for event in sender.events:
             with self.subTest(event=event["event"]):
@@ -891,6 +906,7 @@ class RejectedCallTests(unittest.TestCase):
     """Schema violations are answered with -32602 but still counted."""
 
     def run_session(self, *calls: dict[str, object]) -> tuple[_CapturingSender, list[dict[str, object] | None]]:
+        """Send modern tool calls to an isolated runtime and capture responses and telemetry."""
         sender = _CapturingSender()
         responses: list[dict[str, object] | None] = []
         with scrubbed_env(), patch.object(telemetry, "_get_sender", lambda: sender):
@@ -902,6 +918,7 @@ class RejectedCallTests(unittest.TestCase):
         return sender, responses
 
     def test_a_schema_violation_is_recorded_as_invalid_params(self) -> None:
+        """Verify schema and argument-shape rejections count as INVALID_PARAMS tool errors."""
         sender, responses = self.run_session(
             {"name": "read_file", "arguments": {"path": 5}},
             {"name": "read_file", "arguments": ["not", "an", "object"]},
@@ -922,6 +939,7 @@ class RejectedCallTests(unittest.TestCase):
         self.assertEqual(_properties(by_name["session_end"][0])["unknown_tool_calls"], 0)
 
     def test_unknown_tool_names_are_counted_without_per_tool_stats(self) -> None:
+        """Verify unknown tools increment session totals without emitting arbitrary tool labels."""
         sender, responses = self.run_session(
             {"name": "no_such_tool_a", "arguments": {}},
             {"name": "no_such_tool_b", "arguments": "nope"},
@@ -938,6 +956,7 @@ class RejectedCallTests(unittest.TestCase):
         self.assertNotIn("no_such_tool", json.dumps(sender.events))
 
     def test_falsy_non_object_arguments_are_rejected_and_counted(self) -> None:
+        """Verify falsy non-object arguments are rejected and counted instead of defaulting to {}."""
         invalid = ([], "", False, 0, None)
         sender, responses = self.run_session(*(
             {"name": "server_info", "arguments": value} for value in invalid
@@ -952,6 +971,7 @@ class RejectedCallTests(unittest.TestCase):
 
 class AlreadyAppliedCounterTests(unittest.TestCase):
     def test_session_counts_only_successful_already_applied_results(self) -> None:
+        """Verify already_applied counts only successful calls carrying that flag."""
         sender = _CapturingSender()
         with scrubbed_env(), patch.object(telemetry, "_get_sender", lambda: sender):
             session = SessionTelemetry(permission_mode="safe")
@@ -972,6 +992,7 @@ class AlreadyAppliedCounterTests(unittest.TestCase):
         self.assertEqual(summary["ok"], 2)
 
     def test_runtime_reads_already_applied_from_the_payload(self) -> None:
+        """Verify runtime telemetry reads already_applied from the handler's result payload."""
         sender = _CapturingSender()
         with scrubbed_env(), patch.object(telemetry, "_get_sender", lambda: sender):
             with tempfile.TemporaryDirectory() as tmp:
@@ -991,6 +1012,7 @@ class LocalHarnessEnvTests(unittest.TestCase):
     """Benchmark, dogfood, and agent-eval servers must default telemetry off."""
 
     def test_local_server_env_defaults_off_and_respects_an_override(self) -> None:
+        """Verify local environments default telemetry off, preserve overrides, and do not mutate os.environ."""
         from benchmarks.mcp_http import local_server_env
 
         self.assertEqual(local_server_env({"PATH": "/bin"}), {"PATH": "/bin", "CODING_TOOLS_MCP_TELEMETRY": "off"})
@@ -1003,12 +1025,14 @@ class LocalHarnessEnvTests(unittest.TestCase):
             self.assertNotIn("CODING_TOOLS_MCP_TELEMETRY", os.environ)
 
     def test_harness_server_launchers_start_servers_with_telemetry_off(self) -> None:
+        """Verify latency and dogfood launchers pass telemetry-off environments to child servers."""
         from benchmarks import runtime_latency
         from benchmarks.dogfood import mcp_deterministic_runner
 
         launches: list[dict[str, str]] = []
 
         def fake_popen(*_args: object, **kwargs: object) -> Mock:
+            """Capture the child environment and return a process mock without launching a server."""
             env = kwargs.get("env")
             assert isinstance(env, dict)
             launches.append(env)
@@ -1023,6 +1047,7 @@ class LocalHarnessEnvTests(unittest.TestCase):
             self.assertEqual(env["CODING_TOOLS_MCP_TELEMETRY"], "off")
 
     def test_the_makefile_exports_telemetry_off(self) -> None:
+        """Verify Makefile commands export the overridable telemetry-off default."""
         makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
         self.assertIn("export CODING_TOOLS_MCP_TELEMETRY ?= off", makefile)
 

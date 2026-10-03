@@ -378,6 +378,7 @@ def _fsync_directory(directory: Path) -> None:
 
 
 def parse_patch(patch: str) -> list[PatchOperation]:
+    """Parse an enveloped patch into file operations, retaining ordered hunk anchors."""
     # split("\n") rather than splitlines(): a context line carrying a form feed
     # or U+2028 must stay one patch line so it can match the file line it came
     # from. The envelope closes on the last non-empty line because the patch
@@ -862,6 +863,7 @@ def _already_applied(
 def _anchor_not_found_failure(
     lines: list[str], hunk: ParsedHunk, index: int, path: str, cursor: int, scope: str
 ) -> ToolFailure:
+    """Build a retryable anchor-miss error with nearby text and the search start line."""
     near = _best_near_miss(lines[cursor:], [scope])
     position = cursor + near[0] if near is not None else min(cursor, max(0, len(lines) - 1))
     return ToolFailure(
@@ -983,6 +985,7 @@ def _numbered_excerpt(lines: list[str], position: int, span: int) -> str:
 
 
 def parse_update_hunk(hunk: PatchHunk | list[str]) -> ParsedHunk:
+    """Parse hunk lines into old/new text, source indexes, and anchor metadata."""
     raw_lines = hunk.lines if isinstance(hunk, PatchHunk) else list(hunk)
     scope = hunk.scope if isinstance(hunk, PatchHunk) else None
     outer_scopes = hunk.outer_scopes if isinstance(hunk, PatchHunk) else ()

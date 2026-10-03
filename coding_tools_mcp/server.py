@@ -1090,6 +1090,7 @@ def truncation_fields(truncation: TextTruncation) -> dict[str, Any]:
 
 
 def command_output_refs(command_id: str) -> dict[str, str]:
+    """Return stable stdout and stderr paging references for a command."""
     return {stream: f"command:{command_id}:{stream}" for stream in ("stdout", "stderr")}
 
 
@@ -2080,6 +2081,7 @@ class Runtime:
         *,
         context: RequestContext | None = None,
     ) -> dict[str, Any]:
+        """Validate and dispatch a tool call with idempotency, breaker, and telemetry handling."""
         started_at = time.time()
         args = arguments or {}
         handler = self._tool_handlers.get(name) if self._is_callable_tool(name) else None
@@ -2444,6 +2446,7 @@ class Runtime:
         *,
         context: RequestContext | None = None,
     ) -> None:
+        """Record call telemetry and optionally emit a trace with redacted arguments."""
         raw_error = payload.get("error")
         error = raw_error if isinstance(raw_error, dict) else {}
         duration_ms = int((time.time() - started_at) * 1000)
@@ -2563,6 +2566,7 @@ class Runtime:
         return outcome
 
     def read_file(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Read a bounded UTF-8 line range with its file revision and continuation metadata."""
         requested_path = str(args.get("path", ""))
         resolved = self.resolve_existing(requested_path)
         if resolved.path.is_dir():
@@ -3079,6 +3083,7 @@ class Runtime:
         }
 
     def apply_patch(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Validate and stage patch operations, committing atomically unless this is a dry run."""
         patch = str(args.get("patch", ""))
         dry_run = bool(args.get("dry_run", False))
         with self.patch_lock:
@@ -3370,6 +3375,7 @@ class Runtime:
     def _stage_written_file(
         self, change: ChangeRequest, staged: dict[str, StagedFile]
     ) -> tuple[dict[str, Any], str, int, int]:
+        """Stage a create or revision-checked write and return file evidence and line counts."""
         target = self.workspace.resolve_for_write(change.path)
         content = change.content or ""
         if target.existed and target.path.is_dir():
@@ -3434,6 +3440,7 @@ class Runtime:
     def _stage_edited_file(
         self, change: ChangeRequest, staged: dict[str, StagedFile]
     ) -> tuple[dict[str, Any], str, int, int]:
+        """Stage revision-checked line edits and report only the lines that actually changed."""
         source = self.workspace.resolve_existing(change.path)
         if source.path.is_dir():
             raise ToolFailure("PATCH_FAILED", "Cannot edit a directory.", category="validation")
@@ -3584,6 +3591,7 @@ class Runtime:
             )
 
     def exec_command(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Start a policy-checked managed command and return output after exit or the yield limit."""
         self._prune_commands()
         cmd = str(args.get("cmd", ""))
         if not cmd:
@@ -3822,6 +3830,7 @@ class Runtime:
             self._check_command_path_candidate(candidate)
 
     def _check_command_path_candidate(self, candidate: str) -> None:
+        """Reject command path candidates that escape the workspace or cannot be checked safely."""
         candidate = candidate.strip()
         if not candidate or candidate in {"-", "--"}:
             return
@@ -4040,6 +4049,7 @@ class Runtime:
         self._remember_output_command(command)
 
     def _prune_commands(self) -> None:
+        """Collect completed commands and evict retained output by observation TTL and capacity."""
         with self.commands_lock:
             active = list(self.commands.values())
         for command in active:
@@ -4074,10 +4084,12 @@ class Runtime:
 
     @staticmethod
     def _mark_terminal_observed(command: CommandRun, status: Any) -> None:
+        """Start the retention clock when a completed command is first reported as terminal."""
         if status in TERMINAL_COMMAND_STATUSES and command.completed_at is not None and command.observed_at is None:
             command.observed_at = time.time()
 
     def _format_command_output(self, command: CommandRun, payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+        """Attach paging references and continuations, updating command retention on completion."""
         terminal = payload.get("status") != "running"
         if terminal:
             self._complete_command(command)
@@ -4200,6 +4212,7 @@ class Runtime:
         return " | ".join(parts)
 
     def read_output(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Page retained command output by byte offset, reporting status and any evicted gaps."""
         output_ref = str(args.get("output_ref", "")).strip()
         requested_stream = str(args.get("stream", "") or "")
         if requested_stream and requested_stream not in {"stdout", "stderr"}:
@@ -4294,6 +4307,7 @@ class Runtime:
         return result
 
     def write_stdin(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Write command input or poll with empty chars, then return the next output snapshot."""
         command_id = str(args.get("command_id", ""))
         command = self._get_command(command_id)
         command.refresh_status()
@@ -4343,6 +4357,7 @@ class Runtime:
         return self._format_command_output(command, payload, args)
 
     def _raise_exited_stdin(self, command: CommandRun) -> None:
+        """Record terminal observation and reject stdin writes with the command's exit details."""
         command.refresh_status()
         status = command.status()
         self._complete_command(command)
@@ -4375,6 +4390,7 @@ class Runtime:
         return command.process.poll() is not None
 
     def kill_command(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Terminate a live command with escalation, or report its existing exit without signaling."""
         command_id = str(args.get("command_id", ""))
         command = self._get_command(command_id)
         signal_name = str(args.get("signal", "TERM"))
@@ -4923,6 +4939,7 @@ def windows_shell_syntax() -> bool:
 
 
 def shlex_split(command: str, *, windows: bool | None = None) -> list[str]:
+    """Tokenize shell syntax for policy checks, preserving backslashes on Windows."""
     if windows is None:
         windows = windows_shell_syntax()
     if windows:
@@ -5919,6 +5936,7 @@ def tool_output_schema(name: str | None = None) -> dict[str, Any]:
 
 @functools.cache
 def output_schemas() -> dict[str, dict[str, Any]]:
+    """Return the structured result property schemas keyed by tool name."""
     string: dict[str, Any] = {"type": "string"}
     nullable_string: dict[str, Any] = {"type": ["string", "null"]}
     integer: dict[str, Any] = {"type": "integer"}
@@ -6254,6 +6272,7 @@ def tool_annotations(name: str, *, fake_readonly: bool = False) -> dict[str, Any
 
 @functools.cache
 def input_schemas() -> dict[str, dict[str, Any]]:
+    """Return cached tool argument schemas; callers must treat the tree as read-only."""
     # Cached: callers only read the returned tree, and rebuilding the full
     # ~190-line schema dict on every tools/call dispatch is measurable.
     string = {"type": "string"}

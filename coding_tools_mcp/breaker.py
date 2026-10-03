@@ -109,6 +109,7 @@ class RepeatFailureBreaker:
         ttl_seconds: float = BREAKER_TTL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        """Initialize bounded failure tracking with a verdict TTL and an injectable clock."""
         self._limit = limit
         self._capacity = capacity
         self._ttl = ttl_seconds

@@ -636,14 +636,17 @@ class BreakerInRuntimeTests(unittest.TestCase):
 
 class _Clock:
     def __init__(self) -> None:
+        """Initialize a deterministic clock that tests can advance directly."""
         self.now = 1000.0
 
     def __call__(self) -> float:
+        """Return the current simulated monotonic time."""
         return self.now
 
 
 class BreakerTtlTests(unittest.TestCase):
     def test_a_verdict_older_than_the_ttl_no_longer_blocks_and_is_dropped(self) -> None:
+        """Verify verdicts remain valid at the TTL boundary and are removed after it."""
         clock = _Clock()
         breaker = RepeatFailureBreaker(clock=clock)
         breaker.record_failure("read_file", "fp", error_code="NOT_FOUND", retryable=False)
@@ -656,6 +659,7 @@ class BreakerTtlTests(unittest.TestCase):
         self.assertNotIn(("read_file", "fp"), breaker._last_failure)
 
     def test_a_failure_after_expiry_starts_a_fresh_budget(self) -> None:
+        """Verify the first failure after expiry starts a new counter at one."""
         clock = _Clock()
         breaker = RepeatFailureBreaker(clock=clock)
         breaker.record_failure("read_file", "fp", error_code="NOT_FOUND", retryable=False)
@@ -667,6 +671,7 @@ class BreakerTtlTests(unittest.TestCase):
         self.assertIsNone(breaker.blocked_error_code("read_file", "fp"))
 
     def test_each_failure_refreshes_the_ttl(self) -> None:
+        """Verify each counted failure renews the verdict's expiration time."""
         clock = _Clock()
         breaker = RepeatFailureBreaker(clock=clock)
         breaker.record_failure("read_file", "fp", error_code="NOT_FOUND", retryable=False)
@@ -676,10 +681,12 @@ class BreakerTtlTests(unittest.TestCase):
         self.assertEqual(breaker.blocked_error_code("read_file", "fp"), "NOT_FOUND")
 
     def test_the_default_limit_and_ttl(self) -> None:
+        """Pin the default breaker budget to two failures and its TTL to sixty seconds."""
         self.assertEqual(REPEAT_FAILURE_LIMIT, 2)
         self.assertEqual(BREAKER_TTL_SECONDS, 60)
 
     def test_an_externally_created_file_is_readable_once_the_verdict_expires(self) -> None:
+        """Verify an expired NOT_FOUND verdict permits reading an externally created file."""
         clock = _Clock()
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
@@ -700,6 +707,7 @@ class BreakerTtlTests(unittest.TestCase):
 
 class InternalErrorIsNotCountedTests(unittest.TestCase):
     def test_the_breaker_ignores_internal_error(self) -> None:
+        """Verify internal errors never consume the repeated-failure budget."""
         breaker = RepeatFailureBreaker()
         for _ in range(5):
             self.assertEqual(
@@ -708,9 +716,11 @@ class InternalErrorIsNotCountedTests(unittest.TestCase):
         self.assertIsNone(breaker.blocked_error_code("apply_patch", "fp"))
 
     def test_repeated_os_errors_in_a_handler_are_never_blocked(self) -> None:
+        """Verify repeated handler OSErrors remain callable and surface as internal errors."""
         calls: list[int] = []
 
         def failing(_args: object) -> dict[str, object]:
+            """Count handler invocations and simulate a full filesystem."""
             calls.append(1)
             raise OSError(28, "No space left on device")
 
@@ -731,6 +741,7 @@ class CommandLifecycleResetTests(unittest.TestCase):
     """Starting or killing a command that may write invalidates verdicts."""
 
     def blocked_then(self, tool: str, args: dict[str, object], payload: dict[str, object], **runtime_kwargs: object) -> dict[str, object]:
+        """Seed a stale read verdict, invoke a mocked command tool, and return the next read."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             runtime = Runtime(workspace, permission_mode="trusted", **runtime_kwargs)  # type: ignore[arg-type]
@@ -746,18 +757,21 @@ class CommandLifecycleResetTests(unittest.TestCase):
                 runtime.close()
 
     def test_starting_a_background_command_clears_verdicts(self) -> None:
+        """Verify starting a potentially writable command invalidates stale read verdicts."""
         read = self.blocked_then(
             "exec_command", {"cmd": "true"}, {"command_id": "bg", "operation_outcome": "running"}
         )
         self.assertFalse(read["isError"], read)
 
     def test_killing_a_command_clears_verdicts(self) -> None:
+        """Verify killing a potentially writable command invalidates stale read verdicts."""
         read = self.blocked_then(
             "kill_command", {"command_id": "bg"}, {"command_id": "bg", "operation_outcome": "running"}
         )
         self.assertFalse(read["isError"], read)
 
     def test_polling_a_running_command_keeps_verdicts(self) -> None:
+        """Verify polling a running command preserves existing failure verdicts."""
         for tool, args in (
             ("write_stdin", {"command_id": "bg", "chars": ""}),
             ("read_output", {"output_ref": "command:bg:stdout"}),
@@ -767,10 +781,12 @@ class CommandLifecycleResetTests(unittest.TestCase):
                 self.assertEqual(read["structuredContent"]["error"]["code"], "REPEATED_CALL_BLOCKED")
 
     def test_a_failed_exec_command_keeps_verdicts(self) -> None:
+        """Verify rejected command starts can still exhaust the repeated-failure budget."""
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Runtime(Path(tmp), permission_mode="trusted")
 
             def refuse(_args: object) -> dict[str, object]:
+                """Simulate command validation failure before a process can start."""
                 raise ToolFailure("INVALID_ARGUMENT", "bad workdir", category="validation")
 
             runtime._tool_handlers["exec_command"] = refuse
@@ -781,6 +797,7 @@ class CommandLifecycleResetTests(unittest.TestCase):
         self.assertEqual(results[2]["structuredContent"]["error"]["code"], "REPEATED_CALL_BLOCKED")
 
     def test_a_command_that_cannot_write_keeps_verdicts(self) -> None:
+        """Verify enforced structured-only execution preserves existing failure verdicts."""
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Runtime(
                 Path(tmp),
@@ -807,6 +824,7 @@ class IdempotencyDefaultNormalizationTests(unittest.TestCase):
     PATCH = "*** Begin Patch\n*** Add File: new.txt\n+hello\n*** End Patch\n"
 
     def test_an_explicit_default_dry_run_replays_instead_of_colliding(self) -> None:
+        """Verify explicit default arguments replay a saved result while changed values conflict."""
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Runtime(Path(tmp), permission_mode="safe")
             try:
@@ -825,12 +843,14 @@ class IdempotencyDefaultNormalizationTests(unittest.TestCase):
         self.assertEqual(dry["structuredContent"]["error"]["code"], "IDEMPOTENCY_KEY_REUSED")
 
     def test_only_values_equal_to_the_default_and_of_its_type_are_dropped(self) -> None:
+        """Verify default normalization compares both the value and its type."""
         drop = server_module._drop_schema_defaults
         self.assertEqual(drop("apply_patch", {"patch": "p", "dry_run": False}), {"patch": "p"})
         self.assertEqual(drop("apply_patch", {"patch": "p", "dry_run": True}), {"patch": "p", "dry_run": True})
         self.assertEqual(drop("apply_patch", {"patch": "p", "dry_run": 0}), {"patch": "p", "dry_run": 0})
 
     def test_the_breaker_fingerprint_is_unchanged(self) -> None:
+        """Verify breaker fingerprints still distinguish omitted and explicit default values."""
         self.assertNotEqual(
             argument_fingerprint({"patch": "p"}),
             argument_fingerprint({"patch": "p", "dry_run": False}),

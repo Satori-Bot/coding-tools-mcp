@@ -376,6 +376,7 @@ class SessionTelemetry:
     """
 
     def __init__(self, *, permission_mode: str, transport: str = "stdio") -> None:
+        """Initialize inactive session counters and fixed environment and build labels."""
         self._session_id = uuid.uuid4().hex
         self._started_monotonic = time.monotonic()
         self._base_properties: dict[str, Any] = {
@@ -620,6 +621,7 @@ class SessionTelemetry:
             return self._failure_streaks.get((tool, _label(error_code) or "UNKNOWN"), 0)
 
     def finish(self, *, output_retention: Mapping[str, int] | None = None) -> None:
+        """Emit tool summaries and session totals once, if telemetry is active and enabled."""
         with self._lock:
             if self._finished:
                 return

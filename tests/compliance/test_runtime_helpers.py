@@ -143,6 +143,7 @@ class RuntimeHelperTests(unittest.TestCase):
         self.assertEqual(payload["error"]["code"], "COMMAND_SPAWN_FAILED")
 
     def test_windows_process_termination_distinguishes_graceful_and_force(self) -> None:
+        """Verify both Windows termination modes kill the full tree without console signals."""
         class FakeProcess:
             pid = 123
 
@@ -150,6 +151,7 @@ class RuntimeHelperTests(unittest.TestCase):
                 self.calls: list[object] = []
 
             def poll(self) -> None:
+                """Simulate a process that is still running when tree cleanup starts."""
                 return None
 
             def send_signal(self, value: object) -> None:
@@ -173,6 +175,7 @@ class RuntimeHelperTests(unittest.TestCase):
         tree_kills: list[list[str]] = []
 
         def fake_run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            """Capture tree-kill arguments and simulate successful taskkill completion."""
             tree_kills.append(argv)
             return subprocess.CompletedProcess(argv, 0, b"", b"")
 

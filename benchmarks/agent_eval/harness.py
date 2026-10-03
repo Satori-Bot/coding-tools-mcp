@@ -184,6 +184,7 @@ def _run_check(command: str, workspace: Path, timeout_s: int) -> bool:
 
 
 def _run_agent(task: Task, arm: ArmConfig, workspace: Path, server_url: str) -> tuple[int, bool]:
+    """Run the agent with the task prompt and return its exit code and timeout flag."""
     env = {**local_server_env(), **arm.env, "CODING_TOOLS_EVAL_PROMPT": task.prompt, "CODING_TOOLS_EVAL_TASK": task.id}
     if server_url:
         env["CODING_TOOLS_MCP_URL"] = server_url
@@ -205,6 +206,7 @@ def _run_agent(task: Task, arm: ArmConfig, workspace: Path, server_url: str) -> 
 
 @contextlib.contextmanager
 def _maybe_server(arm: ArmConfig, workspace: Path, python: str) -> Iterator[str]:
+    """Yield a temporary MCP endpoint, or an empty string when this arm needs no server."""
     if not arm.serve_mcp:
         yield ""
         return

@@ -99,6 +99,7 @@ def _render_exec_environment(payload: dict[str, Any]) -> str:
 
 
 def _render_read_file(payload: dict[str, Any]) -> str:
+    """Render file content with its revision, optional line numbers, and continuation hint."""
     content = payload.get("content")
     if not isinstance(content, str):
         return ""
@@ -194,6 +195,7 @@ def _render_changes(payload: dict[str, Any]) -> str:
 
 
 def _render_patch(payload: dict[str, Any], *, noun: str = "Patch") -> str:
+    """Render write results with line counts and revisions labeled appropriately for dry runs."""
     # A dry run's revision names bytes that were never written; labelled as
     # the plain `revision=` a model chains from, it would be sent back and
     # refused against the file that is actually there.
@@ -216,6 +218,7 @@ def _render_patch(payload: dict[str, Any], *, noun: str = "Patch") -> str:
 
 
 def _render_file_evidence(files: Any, *, revision_label: str = "revision") -> list[str]:
+    """Format per-file revisions, changed ranges, and non-exact match quality as text lines."""
     if not isinstance(files, list):
         return []
     rendered: list[str] = []
@@ -249,6 +252,7 @@ def _render_warnings(payload: dict[str, Any]) -> list[str]:
 
 
 def _render_exec(payload: dict[str, Any]) -> str:
+    """Render command status and output with polling and truncation recovery instructions."""
     # Decision-critical fields lead every command result so the model never
     # has to infer success from output alone.
     header = [f"Status: {payload.get('status', 'unknown')}"]
@@ -293,6 +297,7 @@ def _render_exec(payload: dict[str, Any]) -> str:
 
 
 def _render_read_output(payload: dict[str, Any]) -> str:
+    """Render an output page with continuation, exit status, and warnings, including the last page."""
     content = payload.get("content")
     if not isinstance(content, str):
         return ""
@@ -315,6 +320,7 @@ def _render_read_output(payload: dict[str, Any]) -> str:
 
 
 def _render_kill(payload: dict[str, Any]) -> str:
+    """Describe command termination or the existing exit when no signal was sent."""
     signal_sent = payload.get("signal_sent")
     if isinstance(signal_sent, str) and signal_sent:
         suffix = f" (signal {signal_sent})"

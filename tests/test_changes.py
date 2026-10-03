@@ -291,6 +291,7 @@ class ApplyChangesRuntimeTests(unittest.TestCase):
         self.assertEqual(read_after["total_lines"], 3)
 
     def test_a_stale_revision_is_refused_without_the_current_one(self) -> None:
+        """Verify stale edits preserve file bytes and withhold the current revision from errors."""
         stale = self.revision("a.txt")
         (self.workspace / "a.txt").write_text("alpha\nbeta\ndelta\n", encoding="utf-8")
         with self.assertRaises(ToolFailure) as raised:

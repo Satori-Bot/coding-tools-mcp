@@ -161,6 +161,7 @@ def tool_payload(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def start_server(workspace: Path, port: int, raw_dir: Path, name: str) -> subprocess.Popen[bytes]:
+    """Launch a trusted workload server with captured logs and toolchain allow roots."""
     command = [
         sys.executable,
         "-c",

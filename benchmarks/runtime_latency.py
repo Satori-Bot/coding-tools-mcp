@@ -71,6 +71,7 @@ def prepare_workspace(root: Path) -> Path:
 
 
 def start_server(command: str, workspace: Path, port: int) -> subprocess.Popen[bytes]:
+    """Launch the formatted latency server command with telemetry disabled by default."""
     rendered = command.format(
         python=shlex.quote(sys.executable),
         workspace=shlex.quote(str(workspace)),

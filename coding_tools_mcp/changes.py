@@ -192,6 +192,7 @@ def _reject_field(where: str, field: str, value: Any, action: str, *, hint: str 
 
 
 def _parse_edit(entry: dict[str, Any], where: str, position: int) -> LineEdit:
+    """Validate an edit and normalize its line aliases into a zero-based LineEdit."""
     location = f"{where}.edits[{position}]"
     op = entry.get("op")
     if op not in EDIT_OPERATIONS:
