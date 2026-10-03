@@ -151,7 +151,7 @@ class SubprocessEncodingBoundaryTests(unittest.TestCase):
                 0o600,
             )
         )
-        result = self.runtime.list_files({"include_ignored": True})
+        result = self.runtime.list_files({"patterns": ["**"], "include_ignored": True})
         self.assertIn(name, [x["path"] for x in result["files"]])
 
     @unittest.skipUnless(shutil.which("rg"), "ripgrep not installed")
