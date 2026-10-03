@@ -409,6 +409,7 @@ class WindowsTreeKillTests(unittest.TestCase):
 
         with (
             patch.object(processes_module.os, "name", "nt"),
+            patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
             patch.object(processes_module, "hasattr", side_effect=no_killpg, create=True),
             patch.object(processes_module.subprocess, "run", side_effect=fake_run),
         ):
@@ -423,7 +424,7 @@ class WindowsTreeKillTests(unittest.TestCase):
             with self.subTest(force=force):
                 process = _FakeProcess()
                 runs = self._terminate(process, force=force)
-                self.assertEqual(runs, [["taskkill", "/T", "/F", "/PID", "4321"]])
+                self.assertEqual(runs, [[r"C:\Windows\System32\taskkill.exe", "/T", "/F", "/PID", "4321"]])
                 self.assertEqual(process.calls, [("wait", 1)])
 
     def test_windows_falls_back_to_the_direct_child_when_the_tree_kill_fails(self) -> None:
@@ -435,8 +436,34 @@ class WindowsTreeKillTests(unittest.TestCase):
 
     def test_taskkill_failures_are_ignored(self) -> None:
         """Verify a missing taskkill executable does not escape the best-effort cleanup helper."""
-        with patch.object(processes_module.subprocess, "run", side_effect=FileNotFoundError("taskkill")):
+        with (
+            patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
+            patch.object(processes_module.subprocess, "run", side_effect=FileNotFoundError("taskkill")) as run,
+        ):
             processes_module._kill_windows_process_tree(1)
+        run.assert_called_once()
+
+    def test_taskkill_does_not_search_workspace_or_inherit_server_secrets(self) -> None:
+        """Pin cleanup to the system utility even with a workspace PATH and secret env."""
+        with (
+            patch.dict(os.environ, {"SystemRoot": r"D:\Windows", "PATH": r"C:\repo", "TEST_API_TOKEN": "fake"}),
+            patch.object(processes_module.subprocess, "run") as run,
+        ):
+            processes_module._kill_windows_process_tree(4321)
+        self.assertEqual(run.call_args.args[0][0], r"D:\Windows\System32\taskkill.exe")
+        self.assertEqual(run.call_args.kwargs["cwd"], r"D:\Windows\System32")
+        self.assertEqual(run.call_args.kwargs["env"], {"SystemRoot": r"D:\Windows", "WINDIR": r"D:\Windows"})
+
+    def test_taskkill_never_falls_back_to_search_when_system_root_is_unusable(self) -> None:
+        """An absent or relative system directory leaves direct-child cleanup to the caller."""
+        for root in ("", "Windows", r"C:Windows", r"\Windows"):
+            with (
+                self.subTest(root=root),
+                patch.dict(os.environ, {"SystemRoot": root}),
+                patch.object(processes_module.subprocess, "run") as run,
+            ):
+                processes_module._kill_windows_process_tree(4321)
+                run.assert_not_called()
 
     @unittest.skipIf(os.name == "nt", "POSIX process groups")
     def test_posix_still_signals_the_process_group(self) -> None:

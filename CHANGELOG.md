@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Windows process-tree cleanup uses the absolute System32 `taskkill.exe` with
+  a system working directory and minimal environment, avoiding workspace/PATH
+  executable lookup and inheritance of server credentials.
 - Byte-limited `read_file` pages use physical LF, CRLF, or CR line boundaries,
   keeping numbered text, reported ranges, and continuation lines consistent.
 

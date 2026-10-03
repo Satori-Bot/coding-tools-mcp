@@ -181,6 +181,7 @@ class RuntimeHelperTests(unittest.TestCase):
 
         with (
             patch.object(processes_module.os, "name", "nt"),
+            patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
             patch.object(processes_module, "hasattr", side_effect=fake_hasattr, create=True),
             patch.object(processes_module.signal, "CTRL_BREAK_EVENT", 999, create=True),
             patch.object(processes_module.subprocess, "run", side_effect=fake_run),
@@ -199,7 +200,7 @@ class RuntimeHelperTests(unittest.TestCase):
 
         # CTRL_BREAK needs a shared console and terminate() only ends the
         # shell, so both paths kill the whole tree with taskkill instead.
-        self.assertEqual(tree_kills, [["taskkill", "/T", "/F", "/PID", "123"]] * 2)
+        self.assertEqual(tree_kills, [[r"C:\Windows\System32\taskkill.exe", "/T", "/F", "/PID", "123"]] * 2)
         self.assertEqual(graceful.calls, [("wait", 1)])
         self.assertEqual(forced.calls, [("wait", 1)])
 

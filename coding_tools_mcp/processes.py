@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ntpath
 import os
 import signal
 import subprocess
@@ -39,8 +40,16 @@ def _kill_windows_process_tree(pid: int) -> None:
     """
 
     try:
+        # SystemRoot belongs to the server environment, not exec_command's
+        # caller-supplied env. Never search the workspace or PATH for cleanup.
+        system_root = os.environ.get("SystemRoot", "")
+        if not ntpath.isabs(system_root) or not ntpath.splitdrive(system_root)[0]:
+            return
+        system_dir = ntpath.join(system_root, "System32")
         subprocess.run(
-            ["taskkill", "/T", "/F", "/PID", str(pid)],
+            [ntpath.join(system_dir, "taskkill.exe"), "/T", "/F", "/PID", str(pid)],
+            cwd=system_dir,
+            env={"SystemRoot": system_root, "WINDIR": system_root},
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
