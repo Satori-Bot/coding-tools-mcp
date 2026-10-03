@@ -328,12 +328,23 @@ written to the tree: in unrestricted mode, under an unenforced structured-only
 policy, through a configured structured-only write path, or because its
 Landlock setup failed open and it ran unrestricted despite advertised host
 support. Later observations of the same completed command do not reset the
-breaker again.
+breaker again. A successful `exec_command` (a command was started) or
+`kill_command` clears all verdicts too, under the same "could this command
+write" test, because a running or killed command can change the tree at a
+moment the server never observes; `write_stdin` and `read_output` polls do not,
+so a loop on them is still stopped. Verdicts also expire: a fingerprint whose
+last counted failure is more than 60 seconds old no longer blocks and starts
+a fresh budget. That covers changes the server cannot see at all — an editor
+or another process creating a file — and keeps one client's stale verdict
+from blocking the first call of a later conversation on the same shared
+runtime.
 
 Countable means the repeat cannot work. Non-retryable failures count except
-`IDEMPOTENCY_KEY_REUSED`: that error specifically tells the caller to choose a
-new key, and keys are excluded from the work fingerprint, so counting it would
-block its own recovery. `PATCH_CONTEXT_NOT_FOUND`,
+`IDEMPOTENCY_KEY_REUSED` and `INTERNAL_ERROR`. `IDEMPOTENCY_KEY_REUSED`
+specifically tells the caller to choose a new key, and keys are excluded from
+the work fingerprint, so counting it would block its own recovery.
+`INTERNAL_ERROR` is the server failing (a full disk, an unexpected OS error)
+rather than evidence about the request. `PATCH_CONTEXT_NOT_FOUND`,
 `PATCH_CONTEXT_AMBIGUOUS`, `REVISION_MISMATCH`, and `REVISION_REQUIRED` also
 count. They are retryable in the sense that a *different* call can succeed —
 the fix is more context, a narrower scope, or a supplied/fresh `revision`, and
@@ -363,13 +374,17 @@ short command normally finishes in one call. A running command returns:
 }
 ```
 
-Call `write_stdin` with empty `chars` to poll. `read_output` is needed only when
-output is truncated or a caller explicitly requested compact retained output.
+Call `write_stdin` with empty `chars` to poll. Every `exec_command` and
+`write_stdin` result carries `output_refs` (`command:<id>:stdout` and
+`command:<id>:stderr`); `read_output` pages either stream and also reports the
+command's `status` and `exit_code`, but it is needed only when output is
+truncated or a caller explicitly requested compact retained output.
 Its offsets are absolute and independent for stdout and stderr. A single
 truncated stream is selected by `next_action`; when both streams are truncated,
 `next_actions` contains one executable `read_output` call for each stream.
 Command results carry `operation_outcome`: `exited_0`, `exited_nonzero`,
-`timeout`, `signal`, `running`, or `spawn_error`. A `Popen` failure returns
+`timeout`, `signal`, `killed` (stopped by `kill_command`), `running`, or
+`spawn_error`. A `Popen` failure returns
 `COMMAND_SPAWN_FAILED` with the last outcome instead of advertising a state the
 runtime can never produce.
 
@@ -378,9 +393,14 @@ started it. Any authenticated client of the same workspace can continue, read,
 or terminate one with its `command_id`, and no transport event — a closed HTTP
 response, a cancelled request, a reconnect — ends it. Active processes,
 completed-output commands, per-command bytes, and total runtime bytes are
-bounded, all of them per workspace rather than per client. Completed commands
-have a TTL. POSIX `tty=true` uses a real pseudo-terminal; Windows reports
-`TTY_UNSUPPORTED` in this build instead of pretending pipes are a TTY.
+bounded, all of them per workspace rather than per client. A completed
+command's TTL starts when a response first reports its terminal state; a
+command that finished unobserved is kept until the retained-command count or
+byte budget evicts it. POSIX `tty=true` uses a real pseudo-terminal; Windows
+reports `TTY_UNSUPPORTED` in this build instead of pretending pipes are a TTY.
+Without a TTY, stdin is closed after the optional `stdin` text so programs that
+read it see EOF; `keep_stdin_open=true` keeps the pipe open for `write_stdin`
+on every platform.
 
 ## HTTP authentication
 
@@ -454,7 +474,7 @@ be enforced, `permission_mode=dangerous`, and faked read-only annotations.
 
 ### read_file
 
-Inputs: `"path"`, `"start_line"`, `"end_line"`, `"max_lines"`, `"max_bytes"`, `"encoding"`.
+Inputs: `"path"`, `"start_line"`, `"end_line"`, `"max_lines"`, `"max_bytes"`, `"encoding"`, `"line_numbers"`.
 
 Annotations: `{"title":"Read file","readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}`.
 
@@ -471,6 +491,12 @@ not the excerpt. It is also the value `apply_changes` requires, and it equals
 the `revision` `apply_patch` reports for the same bytes. The model-facing text
 opens with a `[Showing lines a-b of n revision=<hash>]` banner so a client that
 forwards only text can still supply it.
+
+`"line_numbers"` (default `false`) prefixes each line of the model-facing text
+with its 1-based number and a tab (`12\tsource line`), which is the numbering
+`apply_changes` edits use. It changes only the text: `structuredContent.content`
+stays the file's bytes, the payload gains `"line_numbers": true`, and a
+truncation continuation carries the flag forward. The default text is unchanged.
 
 ### list_dir
 
@@ -515,9 +541,11 @@ Supports `*** Add File`, `*** Update File`, `*** Delete File`, and
 
 Hunk location, grading, idempotency, and the success/failure fields are
 specified once in [tools-and-schemas.md](tools-and-schemas.md#apply_patch).
-An explicit `@@ <context>` is a forward-only text anchor. It must be found at
-or after the current hunk cursor, and the hunk body is searched only after the
-anchor. It does not create a language-aware function/class/block boundary.
+An explicit `@@ <context>` is a forward-only text anchor, as in Codex. It must
+be found at or after the current hunk cursor, and the hunk takes its first
+match after the anchor; consecutive `@@` lines are found in turn. An
+unanchored hunk must match exactly once after the cursor. An anchor does not
+create a language-aware function/class/block boundary.
 Pure-addition hunks validate their anchor, if any, and append at EOF.
 Each operation's resolved primary path may appear only once per envelope.
 `Add File` may overwrite an existing file and `Move to` may overwrite an
@@ -539,11 +567,16 @@ baseline-recheck, and rollback machinery, and returning the same result shape.
 Nothing has to match: edits name line numbers instead of context.
 
 Each entry of `changes` carries an `action`, a `path`, and, for every action
-except `create`, the `revision` `read_file` published for that path:
+except `create`, the `revision` of that path: the value `read_file` published,
+or the `revision` the latest `apply_changes` or `apply_patch` result reported
+for it (the result text prints `path: revision=<hash>`). Line numbers must come
+from the same version of the file as the revision: after a write, either use
+the new revision with the new numbering or re-read. A dry run's text labels its
+revision `would_be_revision=`, because those bytes were never written.
 
 | action | requires | notes |
 | --- | --- | --- |
-| `create` | `content` | the path must not exist; `revision` is rejected |
+| `create` | `content` | the path must not exist, except that identical bytes are an `unchanged` no-op; `revision` is rejected |
 | `write` | `content`, `revision` when the path exists | upsert of the whole file |
 | `edit` | `edits`, `revision` | line operations, below |
 | `delete` | `revision` | file only, never a directory |
@@ -551,10 +584,22 @@ except `create`, the `revision` `read_file` published for that path:
 | `copy` | `destination`, `revision` | source is verified, not written |
 
 `revision` is the SHA-256 of the file's UTF-8 bytes, identical to the value
-`read_file` and `apply_patch` report. A missing one is `REVISION_REQUIRED`; a
-stale one is `REVISION_MISMATCH`. Both carry the current revision, and both are
-retryable only after re-reading the file — a byte-identical retry is refused by
-the repeat-failure breaker. `apply_patch` deliberately has no equivalent check.
+`read_file` and `apply_patch` report. A `sha256:` prefix, upper-case hex, and
+surrounding whitespace are normalized away; anything else that is not 64 hex
+characters (a placeholder, an abbreviated hash) is a non-retryable
+`INVALID_ARGUMENT`, not a mismatch. A missing revision is `REVISION_REQUIRED`,
+which carries the current revision. A stale one is `REVISION_MISMATCH`, which
+deliberately does **not**: pasted back with line numbers from the old version
+it would pass the check and edit the wrong lines, so the error points at
+`read_file`, which returns the revision together with the numbering that
+belongs to it. Both are retryable only after re-reading the file — a
+byte-identical retry is refused by the repeat-failure breaker. `apply_patch`
+deliberately has no equivalent check.
+
+A `create` whose path exists with byte-identical content (a retry after a lost
+response) succeeds as `unchanged` and writes nothing; different content is
+`PATCH_FAILED` and points at `write` with the file's revision. `create` or
+`write` naming a directory is `PATCH_FAILED` saying so.
 
 Each entry of `edits` is one of:
 
@@ -565,7 +610,12 @@ Each entry of `edits` is one of:
 - `{"op": "insert_before", "line": n, "content": "…"}` where `n` is in
   `[1, total_lines + 1]` and `total_lines + 1` appends
 
-`end_line` is inclusive and defaults to `start_line`. Every line number refers
+`end_line` is inclusive and defaults to `start_line`. Because a client that
+follows the schema alone cannot tell which numbering field an operation takes,
+the unambiguous alternatives are accepted: `replace` and `delete` take `line`
+as shorthand for `start_line = end_line = line`, and `insert_after` and
+`insert_before` take `start_line` (with an equal `end_line`, if any) in place of
+`line`. Two fields that disagree are `INVALID_ARGUMENT`. Every line number refers
 to the file as `read_file` reported it, never to the result of an earlier edit
 in the same call, so the caller does not track its own shifts. Two edits that
 address the same lines — including two insertions at one point — are
@@ -576,13 +626,18 @@ the file's `total_lines` in `details`.
 with empty content a deletion; a trailing newline adds a blank line, so
 `"a\n"` is the two lines `a` and the empty line after it. There are no
 intra-line spans. LF, CRLF, and CR separators supplied in replacement content
-are normalized before the target file's original line-ending convention is
-restored.
+are normalized, and line endings are then tracked per line: every untouched
+line keeps its own terminator byte-for-byte (so mixed and bare-CR files stay as
+they were), a replacement line takes the terminator of the line it replaces,
+an inserted line that of the line it is inserted before (or of the last line
+when appending), and the file's dominant terminator fills any gap. A file
+without a final newline keeps that shape.
 
 A path may appear once per call, as `path` or as `destination`; a duplicate is
-`INVALID_ARGUMENT`. Paths are compared after they resolve, so `a.txt` and
-`./a.txt` are one path and naming both is the same error. Put multiple line
-edits for one file in that file's single `edit` change. An empty `changes`
+`INVALID_ARGUMENT` whose message names both changes and the path. Paths are
+compared after they resolve, so `a.txt` and `./a.txt` are one path and naming
+both is the same error. Put multiple line edits for one file in that file's
+single `edit` change. An empty `changes`
 array fails exactly as an empty patch does, with `PATCH_FAILED` and "No files
 were modified."
 
@@ -591,11 +646,12 @@ most 100 changes and 200 edits per change are accepted as a guard against
 pathological input; roughly 20 files per call is the practical advice. A change
 whose result equals the file's current bytes is reported as `unchanged`, is
 committed as a baseline assertion rather than a rewrite, and sets
-`already_applied` when every change in the call is unchanged.
+`already_applied` when every change in the call is unchanged. `additions` and
+`removals` count only lines that differ, so a no-op replace reports `+0 -0`.
 
 ### exec_command
 
-Inputs: `"cmd"`, `"workdir"`, `"cwd"`, `"timeout_ms"`, `"yield_time_ms"`, `"max_output_bytes"`, `"verbosity"`, `"preview_bytes"`, `"stdin"`, `"tty"`, `"env"`.
+Inputs: `"cmd"`, `"workdir"`, `"cwd"`, `"timeout_ms"`, `"yield_time_ms"`, `"max_output_bytes"`, `"verbosity"`, `"preview_bytes"`, `"stdin"`, `"tty"`, `"keep_stdin_open"`, `"env"`.
 
 Annotations: `{"title":"Execute command","readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}`.
 
@@ -621,6 +677,10 @@ Inputs: `"command_id"`, `"chars"`, `"yield_time_ms"`, `"max_output_bytes"`, `"ve
 Annotations: `{"title":"Write stdin","readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}`.
 
 Poll or interact with a command. Pass empty `chars` to wait for output.
+Non-empty `chars` requires a command started with `keep_stdin_open=true` or
+`tty=true`. Otherwise the call fails with `COMMAND_CLOSED` and
+`details.reason` `stdin_closed` (still running) or `exited` (finished, with
+its exit status).
 
 Poll example: `{"command_id":"abc","chars":"","yield_time_ms":10000}`.
 Input example: `{"command_id":"abc","chars":"yes\n"}`.
@@ -635,7 +695,10 @@ Statuses are `["terminated", "killed", "exited", "terminating", "not_found"]`.
 
 If the process is still alive `"wait_ms"` after a non-KILL signal, the runtime
 escalates to a hard kill and waits up to `"kill_wait_ms"` for the exit. This is
-how a client stops a command: `notifications/cancelled` does not.
+how a client stops a command: `notifications/cancelled` does not. A command it
+stops reports `operation_outcome` `killed`. On an already-finished command it
+sends nothing: `status` is `exited`, `signal_sent` is `null`, and `exit_code`/
+`signal` report the real exit. On Windows the whole process tree is killed.
 
 Example: `{"command_id":"abc","signal":"KILL"}`.
 
@@ -650,6 +713,11 @@ recent bytes (rolling tail) are kept; the range between them may be evicted
 once the per-stream buffer overflows. Responses report `head_retained_bytes`,
 `evicted_gap_bytes`, and `omitted_bytes`; reads inside the evicted range clamp
 forward to the tail. Offsets remain absolute and stable.
+
+`"output_ref"` is a full ref, or a bare command id or `command:<id>` whose
+stream is `"stream"` (default `stdout`); a full ref with a contradicting
+`"stream"` is `INVALID_ARGUMENT`. Results include `status` and `exit_code`
+(`null` while running) so polling with `read_output` sees completion.
 
 Example: `{"output_ref":"command:abc:stdout","offset":0,"limit":4096}`.
 

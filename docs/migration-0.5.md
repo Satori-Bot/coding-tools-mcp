@@ -53,6 +53,9 @@ truncation wording and the continuation hint are unchanged.
 A client that compared `read_file` text to file bytes must strip the first line
 or read `structuredContent.content` instead, which is unchanged.
 
+An optional `line_numbers: true` argument additionally prefixes each text line
+with `<n>\t`, the numbering `apply_changes` uses; the default text is as above.
+
 ### `exec_command` default process lifetime is 300s
 
 `timeout_ms` defaults to 300000 instead of 30000. It always meant total process
@@ -64,38 +67,84 @@ maximum is unchanged at 600000.
 Set `timeout_ms` explicitly if you relied on the old default to bound runaway
 commands.
 
+## `apply_patch` behavior changes since 0.3
+
+These changes shipped in 0.5.0 without being listed as breaking. A client or
+prompt that relied on the 0.3 behavior has to adjust.
+
+- **`*** Add File` overwrites an existing file**, and **`*** Move to:`
+  overwrites an existing destination**. 0.3 refused both with
+  `PATCH_FAILED`. Check for the path first if an overwrite would be a mistake.
+- **Pure-addition hunks append at EOF.** A hunk with only `+` lines used to be
+  inserted at the top of the file; it now appends at the end of the file,
+  matching Codex, even when it carries an `@@` anchor (the anchor is only
+  validated). Include a context line to place an addition anywhere else.
+- **A path may be the primary path of only one operation per envelope.** 0.3
+  chained two `*** Update File` blocks for the same file; 0.5 rejects the
+  envelope with `PATCH_FAILED` before writing anything (the Codex tool-entry
+  contract). Put every hunk for one file in a single `*** Update File` block.
+- **`@@ <context>` text is enforced, Codex-style.** 0.3 ignored it. The anchor
+  must match a whole line (`@@ def greet` does not find `def greet(name):`);
+  a miss is `PATCH_CONTEXT_NOT_FOUND`. The hunk then takes the first match
+  below the anchor, and consecutive `@@` lines are found in turn.
+- **Hunks are located in file order.** 0.3 searched the whole file for each
+  hunk, so hunk order did not matter and a repeated block was always
+  `PATCH_CONTEXT_AMBIGUOUS`. 0.5 follows Codex's forward cursor: a hunk is
+  never matched above the previous one, and a repeated block below an anchor
+  resolves to the first copy. Order hunks top to bottom and use `@@` to pick a
+  copy.
+- **`*** End of File` is enforced.** 0.3 ignored it; a hunk carrying it now
+  has to match at the end of the file.
+- **Whitespace-tolerant matching.** 0.3 matched context exactly; 0.5 may
+  place a hunk after ignoring trailing whitespace or indentation width and
+  says so in `match_quality` and `warnings`.
+- **Success without a write.** A hunk whose result is already present is
+  skipped, and a patch whose hunks were all present succeeds with
+  `already_applied: true`, `additions: 0`, and `removals: 0` instead of
+  failing. Skipped hunks never count toward `additions` or `removals`. A hunk
+  whose old text still matches is applied again, as in Codex, so resending an
+  addition duplicates it; send `idempotency_key` to make a resend safe.
+
 ## New behavior you may want to adopt
 
 ### `apply_changes`
 
 A new tool for line-addressed editing: you name an action (`create`, `write`,
-`edit`, `delete`, `move`, `copy`) and a path. Existing files also use the
-`revision` `read_file` reported. Nothing has to match textually, and a file
-that changed since you read it is refused with `REVISION_MISMATCH` rather than
-silently overwritten.
+`edit`, `delete`, `move`, `copy`) and a path. Existing files also need a
+`revision`: the one `read_file` reported, or the one the latest
+`apply_changes`/`apply_patch` result printed for that path, with line numbers
+from that same version. Nothing has to match textually, and a file that changed
+since is refused with `REVISION_MISMATCH` rather than silently overwritten; the
+error does not repeat the new revision, so re-read the file to get it with its
+current line numbers. A malformed revision (a placeholder or abbreviated hash)
+is `INVALID_ARGUMENT`.
 
 `write` remains an upsert: it requires `revision` when its path exists and may
 omit it when creating a missing path. `create` rejects `revision` and asserts
 absence; `edit`, `delete`, `move`, and `copy` require it. A path may appear once
 per call; put several line edits for one file in that file's single `edit`
-change. Replacement content may use LF, CRLF, or CR separators; they are
-normalized before the file's existing line-ending convention is restored.
+change. Replacement content may use LF, CRLF, or CR separators; untouched
+lines keep their own line endings byte-for-byte, including in mixed or bare-CR
+files. A `create` that repeats a file's exact current content is an
+`already_applied` no-op.
 See the contract for the full semantics, including the line-content rules
 (`""` is zero lines; a trailing newline adds a blank line) and the
 `insert_after` / `insert_before` boundaries.
 
 ### `apply_patch` recovery
 
-- `@@ <context>` is a forward text anchor, not a language scope. The anchor
-  must be found at or after the current search cursor, and the hunk body is
-  matched only after it. This prevents fallback to an earlier identical block
-  without trying to infer Python indentation, JavaScript braces, or any other
-  language structure. A missing anchor is `PATCH_CONTEXT_NOT_FOUND`.
+- `@@ <context>` is a text anchor, not a language scope. As in Codex, it
+  moves a forward search cursor and the hunk takes the first match after it;
+  consecutive `@@` lines are found in turn. A missing anchor is
+  `PATCH_CONTEXT_NOT_FOUND`. An unanchored hunk that matches more than once
+  after the cursor is `PATCH_CONTEXT_AMBIGUOUS`; add an `@@` line to pick the
+  copy. The full rules are in
+  [tools-and-schemas.md](tools-and-schemas.md#locating-a-hunk).
 - A pure-addition update hunk validates any `@@ <context>` first and then
   appends at EOF, matching Codex's current placement semantics. Anchorless
   pure additions also append at EOF.
 - `*** End of File` participates in locating non-empty old/context blocks
-  instead of being ignored.
+  instead of being ignored: the placement must reach the end of the file.
 - Matching is graded: exact, then ignoring trailing whitespace, then ignoring
   indentation width. The grade actually used is reported in `match_quality`,
   so a downgrade is visible rather than silent.
@@ -105,15 +154,19 @@ See the contract for the full semantics, including the line-content rules
 - Failure returns the hunk index, nearby numbered text, and candidate match
   positions, so the next attempt can be aimed rather than guessed.
 - A patch whose changes are already present reports `already_applied` instead
-  of failing, provided the hunk's result is locatable: an exact or
-  trailing-whitespace match of a block that carries a context line, or a
-  multi-line addition. A context-free single line found somewhere in the file
-  is a coincidence and still fails. Evidence must also be non-blank, unique,
-  and inside the same forward anchor/cursor window and EOF constraints.
+  of failing, provided the hunk's post-image is located uniquely, by the same
+  rules as a normal placement, with non-trivial evidence (blank and
+  punctuation-only lines never count). A context-free single line found
+  somewhere in the file is a coincidence and still fails, and so does a patch
+  in which any hunk is neither applicable nor provably applied. The exact
+  evidence rules are in
+  [tools-and-schemas.md](tools-and-schemas.md#primary-paths-overwrites-and-idempotency).
 - `apply_patch` and `apply_changes` accept an optional `idempotency_key`. A
   replay of the same key with the same arguments returns the recorded result
   instead of doing the work twice; reusing the key for different arguments is
-  `IDEMPOTENCY_KEY_REUSED`, and a `dry_run` result is never recorded.
+  `IDEMPOTENCY_KEY_REUSED`, and a `dry_run` result is never recorded. An
+  argument spelled out at its schema default (`"dry_run": false`) is the same
+  request as one that omits it.
   Concurrent duplicates under the same tool and key wait for the first call
   and replay its successful result.
 - `apply_patch` now matches Codex path semantics: an operation's resolved
@@ -165,9 +218,14 @@ installed for `exec_command`.
   unrestricted mode, through a structured-only write path, when
   structured-only is not actually enforced, or when Landlock setup failed open
   for that launch. Re-polling the same completed command does not clear it
-  again. A failure that began before one of these resets is not counted as a
-  strike in the new post-reset generation.
-  `IDEMPOTENCY_KEY_REUSED` does not count because its recovery is a new key.
+  again. A successful `exec_command` or `kill_command` clears it as well,
+  under the same "could this command write" test; `write_stdin` and
+  `read_output` polls do not. A verdict also expires 60 seconds after its last
+  counted failure. A failure that began before one of these resets is not
+  counted as a strike in the new post-reset generation.
+  `IDEMPOTENCY_KEY_REUSED` does not count because its recovery is a new key,
+  and `INTERNAL_ERROR` does not count because it is a server failure, not a
+  verdict on the request.
 - **Telemetry counts operations truthfully.** A command that exits nonzero,
   times out, or dies on a signal is no longer recorded as a successful tool
   call, and its terminal outcome is counted once however many times the command

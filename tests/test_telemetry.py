@@ -700,6 +700,54 @@ class OperationOutcomeTests(unittest.TestCase):
                 self.assertNotIn("outcome_exited_nonzero", summaries[observer])
 
 
+class BreakerBlockTests(unittest.TestCase):
+    """A breaker refusal is not a tool failure: no handler ran."""
+
+    def test_a_refusal_loop_is_counted_as_blocks_not_errors(self) -> None:
+        # One client that ignored REPEATED_CALL_BLOCKED and resent a bad
+        # read_output ~2000 times made v0.5.0's dashboard read 45% errors.
+        sender = _CapturingSender()
+        with scrubbed_env(CODING_TOOLS_MCP_TELEMETRY="on"), patch.object(
+            telemetry, "_get_sender", return_value=sender
+        ), tempfile.TemporaryDirectory() as tmp:
+            runtime = Runtime(Path(tmp), permission_mode="safe")
+            try:
+                runtime.telemetry.record_request(LEGACY_PROTOCOL_VERSION, "tools/call")
+                codes = [
+                    runtime.call_tool("read_file", {"path": "missing.txt"})["structuredContent"]["error"]["code"]
+                    for _ in range(50)
+                ]
+            finally:
+                runtime.close()
+        self.assertEqual(codes[:2], ["NOT_FOUND", "NOT_FOUND"])
+        self.assertEqual(set(codes[2:]), {"REPEATED_CALL_BLOCKED"})
+        events = _events_by_name(sender)
+        summary = next(_properties(e) for e in events["tool_summary"] if _properties(e)["tool"] == "read_file")
+        self.assertEqual(summary["calls"], 2)
+        self.assertEqual(summary["errors"], 2)
+        self.assertEqual(summary["ok"], 0)
+        self.assertEqual(summary["breaker_blocks"], 48)
+        self.assertNotIn("err_REPEATED_CALL_BLOCKED", summary)
+        # Refusals spend none of the per-session tool_error budget.
+        self.assertEqual(
+            [_properties(e)["error_code"] for e in events.get("tool_error", [])], ["NOT_FOUND", "NOT_FOUND"]
+        )
+        end = _properties(events["session_end"][0])
+        self.assertEqual(end["tool_calls"], 2)
+        self.assertEqual(end["breaker_blocks"], 48)
+        self.assertEqual(end["errors_dropped"], 0)
+
+    def test_a_refusal_neither_extends_nor_clears_a_failure_streak(self) -> None:
+        session = SessionTelemetry(permission_mode="safe")
+        for _ in range(2):
+            session.record_tool_call("read_output", ok=False, error_code="INVALID_ARGUMENT", duration_ms=1, truncated=False)
+        session.record_tool_call(
+            "read_output", ok=False, error_code="REPEATED_CALL_BLOCKED", duration_ms=0, truncated=False
+        )
+        self.assertEqual(session.consecutive_failures("read_output", "INVALID_ARGUMENT"), 2)
+        self.assertEqual(session.consecutive_failures("read_output", "REPEATED_CALL_BLOCKED"), 0)
+
+
 class DocumentationDriftTests(unittest.TestCase):
     def test_documented_schema_matches_emitted_events(self) -> None:
         doc = (Path(__file__).resolve().parents[1] / "docs" / "telemetry.md").read_text(encoding="utf-8")
@@ -708,6 +756,275 @@ class DocumentationDriftTests(unittest.TestCase):
         for name in emitted:
             self.assertIn(f"`{name}`", doc)
         self.assertIn(f"max {ERROR_EVENTS_PER_SESSION} per session", doc)
+
+    def test_documented_properties_match_emitted_properties(self) -> None:
+        doc = (Path(__file__).resolve().parents[1] / "docs" / "telemetry.md").read_text(encoding="utf-8")
+        by_name = _events_by_name(_run_probe_session())
+        start = _properties(by_name["session_start"][0])
+        for name in ("install", "build"):
+            self.assertIn(name, start)
+            self.assertIn(f"`{name}`", doc)
+        self.assertIn("already_applied", _properties(by_name["tool_summary"][0]))
+        self.assertIn("`already_applied`", doc)
+        self.assertIn("unknown_tool_calls", _properties(by_name["session_end"][0]))
+        self.assertIn("`unknown_tool_calls`", doc)
+        self.assertIn("`err_INVALID_PARAMS`", doc)
+        for kind in ("index", "editable", "local", "vcs", "source", "unknown"):
+            self.assertIn(f"`{kind}`", doc)
+
+
+class _FakeDistribution:
+    def __init__(self, direct_url: object, *, package_dir: Path | None = None, broken: bool = False) -> None:
+        self._direct_url = direct_url
+        self._package_dir = package_dir if package_dir is not None else telemetry._PACKAGE_DIR
+        self._broken = broken
+
+    def read_text(self, name: str) -> str | None:
+        if self._broken:
+            raise RuntimeError("corrupt metadata")
+        assert name == "direct_url.json"
+        if self._direct_url is None:
+            return None
+        return json.dumps(self._direct_url)
+
+    def locate_file(self, relative: str) -> Path:
+        return self._package_dir.parent / relative
+
+
+class BuildFingerprintTests(unittest.TestCase):
+    def install_kind_for(self, distribution: object) -> str:
+        from importlib import metadata
+
+        def fake(name: str) -> object:
+            self.assertEqual(name, "coding-tools-mcp")
+            if distribution is None:
+                raise metadata.PackageNotFoundError(name)
+            return distribution
+
+        with patch("importlib.metadata.distribution", fake):
+            return telemetry.install_kind()
+
+    def test_install_kind_for_each_way_of_installing(self) -> None:
+        cases = {
+            "source": None,
+            "index": _FakeDistribution(None),
+            "editable": _FakeDistribution({"url": "file:///home/u/src/ctm", "dir_info": {"editable": True}}),
+            "local": _FakeDistribution({"url": "file:///home/u/src/ctm", "dir_info": {}}),
+            "vcs": _FakeDistribution(
+                {"url": "https://github.com/example/ctm.git", "vcs_info": {"vcs": "git", "commit_id": "abc"}}
+            ),
+        }
+        for expected, distribution in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(self.install_kind_for(distribution), expected)
+
+    def test_a_local_archive_install_is_local(self) -> None:
+        archive = _FakeDistribution({"url": "file:///tmp/ctm-0.5.0-py3-none-any.whl", "archive_info": {}})
+        self.assertEqual(self.install_kind_for(archive), "local")
+
+    def test_an_installed_copy_shadowed_by_a_checkout_is_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            elsewhere = _FakeDistribution(None, package_dir=Path(tmp) / "coding_tools_mcp")
+            self.assertEqual(self.install_kind_for(elsewhere), "source")
+
+    def test_unreadable_metadata_is_unknown_and_never_raises(self) -> None:
+        self.assertEqual(self.install_kind_for(_FakeDistribution(None, broken=True)), "unknown")
+
+    def test_build_id_is_a_stable_hash_of_the_package_sources(self) -> None:
+        saved = telemetry._build_id
+        try:
+            telemetry._build_id = None
+            first = telemetry.build_id()
+            telemetry._build_id = None
+            second = telemetry.build_id()
+        finally:
+            telemetry._build_id = saved
+        self.assertEqual(first, second)
+        self.assertRegex(first, r"^[0-9a-f]{12}$")
+
+        import hashlib
+
+        package = telemetry._PACKAGE_DIR
+        digest = hashlib.sha256()
+        for path in sorted(package.rglob("*.py"), key=lambda item: item.relative_to(package).as_posix()):
+            digest.update(path.relative_to(package).as_posix().encode("utf-8") + b"\0" + path.read_bytes())
+        self.assertEqual(first, digest.hexdigest()[:12])
+
+    def test_build_id_changes_with_the_sources_and_degrades_to_unknown(self) -> None:
+        saved = telemetry._build_id
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                package = Path(tmp) / "coding_tools_mcp"
+                package.mkdir()
+                (package / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+                with patch.object(telemetry, "_PACKAGE_DIR", package):
+                    telemetry._build_id = None
+                    original = telemetry.build_id()
+                    (package / "__init__.py").write_text("x = 2\n", encoding="utf-8")
+                    telemetry._build_id = None
+                    modified = telemetry.build_id()
+                    telemetry._build_id = None
+                    # Cached: a later edit does not change a running process's id.
+                    self.assertEqual(telemetry.build_id(), modified)
+                    (package / "__init__.py").write_text("x = 3\n", encoding="utf-8")
+                    self.assertEqual(telemetry.build_id(), modified)
+                with patch.object(telemetry, "_PACKAGE_DIR", Path(tmp) / "missing"):
+                    telemetry._build_id = None
+                    self.assertEqual(telemetry.build_id(), "unknown")
+        finally:
+            telemetry._build_id = saved
+        self.assertNotEqual(original, modified)
+
+    def test_every_event_carries_only_the_two_fingerprint_labels(self) -> None:
+        sender = _run_probe_session()
+        for event in sender.events:
+            with self.subTest(event=event["event"]):
+                properties = _properties(event)
+                self.assertIn(properties["install"], {"index", "editable", "local", "vcs", "source", "unknown"})
+                self.assertRegex(str(properties["build"]), r"^([0-9a-f]{12}|unknown)$")
+        serialized = json.dumps(sender.events)
+        self.assertNotIn(str(telemetry._PACKAGE_DIR), serialized)
+        self.assertNotIn("file://", serialized)
+
+
+class RejectedCallTests(unittest.TestCase):
+    """Schema violations are answered with -32602 but still counted."""
+
+    def run_session(self, *calls: dict[str, object]) -> tuple[_CapturingSender, list[dict[str, object] | None]]:
+        sender = _CapturingSender()
+        responses: list[dict[str, object] | None] = []
+        with scrubbed_env(), patch.object(telemetry, "_get_sender", lambda: sender):
+            with tempfile.TemporaryDirectory() as tmp:
+                runtime = Runtime(Path(tmp))
+                for params in calls:
+                    responses.append(_modern_request(runtime, "tools/call", params))
+                runtime.close()
+        return sender, responses
+
+    def test_a_schema_violation_is_recorded_as_invalid_params(self) -> None:
+        sender, responses = self.run_session(
+            {"name": "read_file", "arguments": {"path": 5}},
+            {"name": "read_file", "arguments": ["not", "an", "object"]},
+        )
+        for response in responses:
+            assert response is not None
+            self.assertEqual(response["error"]["code"], -32602)
+        by_name = _events_by_name(sender)
+        errors = [_properties(event) for event in by_name["tool_error"]]
+        self.assertEqual([error["error_code"] for error in errors], ["INVALID_PARAMS", "INVALID_PARAMS"])
+        self.assertEqual([error["tool"] for error in errors], ["read_file", "read_file"])
+        summary = _properties(by_name["tool_summary"][0])
+        self.assertEqual(summary["tool"], "read_file")
+        self.assertEqual(summary["calls"], 2)
+        self.assertEqual(summary["errors"], 2)
+        self.assertEqual(summary["ok"], 0)
+        self.assertEqual(summary["err_INVALID_PARAMS"], 2)
+        self.assertEqual(_properties(by_name["session_end"][0])["unknown_tool_calls"], 0)
+
+    def test_unknown_tool_names_are_counted_without_per_tool_stats(self) -> None:
+        sender, responses = self.run_session(
+            {"name": "no_such_tool_a", "arguments": {}},
+            {"name": "no_such_tool_b", "arguments": "nope"},
+        )
+        for response in responses:
+            assert response is not None
+            self.assertEqual(response["error"]["code"], -32602)
+        by_name = _events_by_name(sender)
+        self.assertNotIn("tool_summary", by_name)
+        self.assertNotIn("tool_error", by_name)
+        end = _properties(by_name["session_end"][0])
+        self.assertEqual(end["unknown_tool_calls"], 2)
+        self.assertEqual(end["tool_calls"], 0)
+        self.assertNotIn("no_such_tool", json.dumps(sender.events))
+
+    def test_falsy_non_object_arguments_are_rejected_and_counted(self) -> None:
+        invalid = ([], "", False, 0, None)
+        sender, responses = self.run_session(*(
+            {"name": "server_info", "arguments": value} for value in invalid
+        ))
+        for value, response in zip(invalid, responses):
+            with self.subTest(arguments=value):
+                assert response is not None
+                self.assertEqual(response.get("error", {}).get("code"), -32602)
+        summary = _properties(_events_by_name(sender)["tool_summary"][0])
+        self.assertEqual(summary["err_INVALID_PARAMS"], len(invalid))
+
+
+class AlreadyAppliedCounterTests(unittest.TestCase):
+    def test_session_counts_only_successful_already_applied_results(self) -> None:
+        sender = _CapturingSender()
+        with scrubbed_env(), patch.object(telemetry, "_get_sender", lambda: sender):
+            session = SessionTelemetry(permission_mode="safe")
+            session.record_request("legacy", "tools/call")
+            for already_applied, ok in ((True, True), (False, True), (True, False)):
+                session.record_tool_call(
+                    "apply_patch",
+                    ok=ok,
+                    error_code=None if ok else "PATCH_FAILED",
+                    duration_ms=1,
+                    truncated=False,
+                    already_applied=already_applied,
+                )
+            session.finish()
+        summary = _properties(_events_by_name(sender)["tool_summary"][0])
+        self.assertEqual(summary["already_applied"], 1)
+        self.assertEqual(summary["calls"], 3)
+        self.assertEqual(summary["ok"], 2)
+
+    def test_runtime_reads_already_applied_from_the_payload(self) -> None:
+        sender = _CapturingSender()
+        with scrubbed_env(), patch.object(telemetry, "_get_sender", lambda: sender):
+            with tempfile.TemporaryDirectory() as tmp:
+                runtime = Runtime(Path(tmp))
+                _initialize(runtime)
+                runtime._tool_handlers["apply_patch"] = lambda _args: {"already_applied": True, "affected_files": []}
+                runtime.call_tool("apply_patch", {"patch": "*** Begin Patch\n*** End Patch\n"})
+                runtime._tool_handlers["apply_patch"] = lambda _args: {"affected_files": []}
+                runtime.call_tool("apply_patch", {"patch": "*** Begin Patch\n*** End Patch\n"})
+                runtime.close()
+        summaries = {str(_properties(event)["tool"]): _properties(event) for event in _events_by_name(sender)["tool_summary"]}
+        self.assertEqual(summaries["apply_patch"]["already_applied"], 1)
+        self.assertEqual(summaries["apply_patch"]["calls"], 2)
+
+
+class LocalHarnessEnvTests(unittest.TestCase):
+    """Benchmark, dogfood, and agent-eval servers must default telemetry off."""
+
+    def test_local_server_env_defaults_off_and_respects_an_override(self) -> None:
+        from benchmarks.mcp_http import local_server_env
+
+        self.assertEqual(local_server_env({"PATH": "/bin"}), {"PATH": "/bin", "CODING_TOOLS_MCP_TELEMETRY": "off"})
+        self.assertEqual(
+            local_server_env({"CODING_TOOLS_MCP_TELEMETRY": "debug"})["CODING_TOOLS_MCP_TELEMETRY"], "debug"
+        )
+        with scrubbed_env():
+            env = local_server_env()
+            self.assertEqual(env["CODING_TOOLS_MCP_TELEMETRY"], "off")
+            self.assertNotIn("CODING_TOOLS_MCP_TELEMETRY", os.environ)
+
+    def test_harness_server_launchers_start_servers_with_telemetry_off(self) -> None:
+        from benchmarks import runtime_latency
+        from benchmarks.dogfood import mcp_deterministic_runner
+
+        launches: list[dict[str, str]] = []
+
+        def fake_popen(*_args: object, **kwargs: object) -> Mock:
+            env = kwargs.get("env")
+            assert isinstance(env, dict)
+            launches.append(env)
+            return Mock()
+
+        with scrubbed_env(), tempfile.TemporaryDirectory() as tmp:
+            with patch("subprocess.Popen", fake_popen):
+                runtime_latency.start_server("{python} -c pass", Path(tmp), 1)
+                mcp_deterministic_runner.start_server("true", Path(tmp), "http://127.0.0.1:1/mcp")
+        self.assertEqual(len(launches), 2)
+        for env in launches:
+            self.assertEqual(env["CODING_TOOLS_MCP_TELEMETRY"], "off")
+
+    def test_the_makefile_exports_telemetry_off(self) -> None:
+        makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("export CODING_TOOLS_MCP_TELEMETRY ?= off", makefile)
 
 
 class InstallIdTests(unittest.TestCase):

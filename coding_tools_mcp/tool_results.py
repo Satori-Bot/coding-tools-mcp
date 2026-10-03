@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 
 MODEL_TEXT_SAFETY_LIMIT_BYTES = (2 * 1_048_576) + 65_536
+# One line and its terminator, split the way read_file counts lines.
+_TEXT_LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$")
 
 
 def make_tool_result(
@@ -109,6 +112,8 @@ def _render_read_file(payload: dict[str, Any]) -> str:
     revision = payload.get("revision")
     if isinstance(revision, str) and revision:
         shown = f"{shown} revision={revision}"
+    if payload.get("line_numbers") is True:
+        content = _number_lines(content, payload.get("start_line"))
     if not payload.get("truncated"):
         return f"[{shown}]\n{content}"
     next_start = payload.get("next_start_line")
@@ -123,6 +128,15 @@ def _render_read_file(payload: dict[str, Any]) -> str:
     else:
         hint = "; content truncated; raise max_bytes or request a narrower range"
     return f"[{shown}{hint}]\n{content}"
+
+
+def _number_lines(content: str, start_line: Any) -> str:
+    """Prefix each line with ``<n>\\t``: the numbering apply_changes edits use."""
+
+    first = start_line if isinstance(start_line, int) and not isinstance(start_line, bool) else 1
+    return "".join(
+        f"{number}\t{line}" for number, line in enumerate(_TEXT_LINE.findall(content), start=first)
+    )
 
 
 def _render_list(payload: dict[str, Any]) -> str:
@@ -180,6 +194,10 @@ def _render_changes(payload: dict[str, Any]) -> str:
 
 
 def _render_patch(payload: dict[str, Any], *, noun: str = "Patch") -> str:
+    # A dry run's revision names bytes that were never written; labelled as
+    # the plain `revision=` a model chains from, it would be sent back and
+    # refused against the file that is actually there.
+    revision_label = "would_be_revision" if payload.get("dry_run") else "revision"
     prefix = f"{noun} validated" if payload.get("dry_run") else f"{noun} applied"
     if payload.get("already_applied"):
         prefix = f"{noun} already applied"
@@ -192,12 +210,12 @@ def _render_patch(payload: dict[str, Any], *, noun: str = "Patch") -> str:
         lines.append(summary)
     # Post-edit evidence: the model asked for a change and gets back what the
     # file now is, including the revision token apply_changes will demand.
-    lines.extend(_render_file_evidence(files))
+    lines.extend(_render_file_evidence(files, revision_label=revision_label))
     lines.extend(_render_warnings(payload))
     return "\n".join(lines)
 
 
-def _render_file_evidence(files: Any) -> list[str]:
+def _render_file_evidence(files: Any, *, revision_label: str = "revision") -> list[str]:
     if not isinstance(files, list):
         return []
     rendered: list[str] = []
@@ -205,7 +223,7 @@ def _render_file_evidence(files: Any) -> list[str]:
         if not isinstance(entry, dict) or not entry.get("revision"):
             continue
         parts = [
-            f"{entry.get('path', '')}: revision={entry['revision']}",
+            f"{entry.get('path', '')}: {revision_label}={entry['revision']}",
             f"total_lines={entry.get('total_lines', '?')}",
         ]
         ranges = entry.get("changed_ranges")
@@ -262,6 +280,9 @@ def _render_exec(payload: dict[str, Any]) -> str:
         sections.append(
             f'Command still running; poll with write_stdin(command_id="{command_id}", chars="", yield_time_ms=10000).'
         )
+        refs = payload.get("output_refs")
+        if isinstance(refs, dict) and refs:
+            sections.append("Output refs: " + ", ".join(str(ref) for ref in refs.values()) + ".")
     if payload.get("truncated"):
         continuations = _render_exec_continuations(payload)
         if continuations:
@@ -275,19 +296,36 @@ def _render_read_output(payload: dict[str, Any]) -> str:
     content = payload.get("content")
     if not isinstance(content, str):
         return ""
+    lines = [content]
     next_offset = payload.get("next_offset")
-    if next_offset is None:
-        return content
-    next_call = _render_next_action(payload)
-    if not next_call:
-        ref = payload.get("stream_output_ref") or payload.get("output_ref") or ""
-        next_call = _render_tool_call("read_output", {"output_ref": ref, "offset": next_offset})
-    return f"{content}\n[more: {next_call}]"
+    if next_offset is not None:
+        next_call = _render_next_action(payload)
+        if not next_call:
+            ref = payload.get("stream_output_ref") or payload.get("output_ref") or ""
+            next_call = _render_tool_call("read_output", {"output_ref": ref, "offset": next_offset})
+        lines.append(f"[more: {next_call}]")
+    status = payload.get("status")
+    if isinstance(status, str) and status:
+        # Polling with read_output alone must be able to see completion.
+        exit_code = payload.get("exit_code")
+        suffix = f" | exit code {exit_code}" if exit_code is not None else ""
+        lines.append(f"[command {status}{suffix}]")
+    lines.extend(_render_warnings(payload))
+    return "\n".join(lines)
 
 
 def _render_kill(payload: dict[str, Any]) -> str:
     signal_sent = payload.get("signal_sent")
-    suffix = f" (signal {signal_sent})" if isinstance(signal_sent, str) and signal_sent else ""
+    if isinstance(signal_sent, str) and signal_sent:
+        suffix = f" (signal {signal_sent})"
+    else:
+        # Nothing was sent; state the exit the command already had.
+        finished = "already timed out" if payload.get("timed_out") else "already finished"
+        if payload.get("signal"):
+            finished += f" by signal {payload['signal']}"
+        elif payload.get("exit_code") is not None:
+            finished += f" with exit code {payload['exit_code']}"
+        suffix = f" ({finished}; no signal sent)"
     return f"Command {payload.get('command_id', '')}: {payload.get('status', 'completed')}{suffix}."
 
 

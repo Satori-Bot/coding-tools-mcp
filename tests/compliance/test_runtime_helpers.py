@@ -149,6 +149,9 @@ class RuntimeHelperTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.calls: list[object] = []
 
+            def poll(self) -> None:
+                return None
+
             def send_signal(self, value: object) -> None:
                 self.calls.append(("send_signal", value))
 
@@ -167,10 +170,17 @@ class RuntimeHelperTests(unittest.TestCase):
                 return False
             return builtins.hasattr(value, name)
 
+        tree_kills: list[list[str]] = []
+
+        def fake_run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            tree_kills.append(argv)
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
         with (
             patch.object(processes_module.os, "name", "nt"),
             patch.object(processes_module, "hasattr", side_effect=fake_hasattr, create=True),
             patch.object(processes_module.signal, "CTRL_BREAK_EVENT", 999, create=True),
+            patch.object(processes_module.subprocess, "run", side_effect=fake_run),
         ):
             graceful = FakeProcess()
             processes_module.terminate_process_group(  # type: ignore[arg-type]
@@ -184,8 +194,11 @@ class RuntimeHelperTests(unittest.TestCase):
                 force=True,
             )
 
-        self.assertEqual(graceful.calls, [("send_signal", 999), ("wait", 1)])
-        self.assertEqual(forced.calls, ["kill", ("wait", 1)])
+        # CTRL_BREAK needs a shared console and terminate() only ends the
+        # shell, so both paths kill the whole tree with taskkill instead.
+        self.assertEqual(tree_kills, [["taskkill", "/T", "/F", "/PID", "123"]] * 2)
+        self.assertEqual(graceful.calls, [("wait", 1)])
+        self.assertEqual(forced.calls, [("wait", 1)])
 
     def test_atomic_patch_commit_rolls_back_all_files_after_mid_commit_failure(self) -> None:
         with TemporaryDirectory() as tmp:
