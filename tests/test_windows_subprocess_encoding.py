@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from coding_tools_mcp import server as server_module
 from coding_tools_mcp.server import Runtime, Workspace
+from coding_tools_mcp.errors import ToolFailure
 
 
 class WindowsSubprocessEncodingTests(unittest.TestCase):
@@ -28,6 +29,32 @@ class WindowsSubprocessEncodingTests(unittest.TestCase):
         self.assertEqual(
             run.call_args.kwargs["input"], "ignored-文件.txt\0".encode("utf-8")
         )
+
+    def test_git_text_preserves_newline_translation(self) -> None:
+        """Binary capture retains the previous text-mode newline contract."""
+        runtime = Runtime(Path.cwd())
+        completed = subprocess.CompletedProcess(
+            ["git"], 0, b"a\r\nb\rc\n", b"warning\r\n"
+        )
+        try:
+            with patch.object(runtime, "_run_git_bytes", return_value=completed):
+                result = runtime._run_git_text(["git", "status"])
+        finally:
+            runtime.close()
+        self.assertEqual(result.stdout, "a\nb\nc\n")
+        self.assertEqual(result.stderr, "warning\n")
+
+    def test_git_text_invalid_stderr_is_structured_error(self) -> None:
+        """Undecodable diagnostics cannot become silent replacement text."""
+        runtime = Runtime(Path.cwd())
+        completed = subprocess.CompletedProcess(["git"], 1, b"", b"bad \xff")
+        try:
+            with patch.object(runtime, "_run_git_bytes", return_value=completed):
+                with self.assertRaises(ToolFailure) as caught:
+                    runtime._run_git_text(["git", "status"])
+        finally:
+            runtime.close()
+        self.assertEqual(caught.exception.code, "GIT_ERROR")
 
     def test_fd_file_listing_decodes_as_utf8(self) -> None:
         runtime = Runtime(Path.cwd())

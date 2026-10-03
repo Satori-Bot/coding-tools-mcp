@@ -3936,15 +3936,24 @@ class Runtime:
     def _run_git_text(
         self, cmd: list[str], *, timeout: int | None = None, env: dict[str, str] | None = None
     ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        # Decode in the caller: Windows text-pipe reader threads can otherwise
+        # lose a UnicodeDecodeError and leave stdout/stderr as None.
+        completed = self._run_git_bytes(
             [cmd[0], "-c", "i18n.logOutputEncoding=UTF-8", *cmd[1:]],
-            text=True,
-            encoding="utf-8",
-            errors="strict",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             timeout=timeout,
-            env=self._git_env() if env is None else env,
+            env=env,
+        )
+        try:
+            stdout = completed.stdout.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+            stderr = completed.stderr.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        except UnicodeDecodeError as exc:
+            raise ToolFailure(
+                "GIT_ERROR",
+                "Git output is not valid UTF-8; refusing to replace undecodable bytes.",
+                category="runtime",
+            ) from exc
+        return subprocess.CompletedProcess(
+            completed.args, completed.returncode, stdout, stderr
         )
 
     def _run_git_bytes(
