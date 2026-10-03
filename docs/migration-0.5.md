@@ -190,25 +190,12 @@ installed for `exec_command`.
 
 ## Behavior changes that need no action
 
-- **Repeat-failure circuit breaker.** The third byte-identical call that would
-  produce the same deterministic error is refused with `REPEATED_CALL_BLOCKED`
-  instead of failing the same way again. Changing an argument gives that call a
-  fresh budget. A successful non-dry-run `apply_patch` or `apply_changes` clears
-  the breaker only when it wrote, moved, copied, or deleted something;
-  `already_applied` results do not clear it. The first terminal observation of
-  each command from `exec_command`, `write_stdin`, `read_output`, or
-  `kill_command` also clears it whenever that command could write: in
-  unrestricted mode, through a structured-only write path, when
-  structured-only is not actually enforced, or when Landlock setup failed open
-  for that launch. Re-polling the same completed command does not clear it
-  again. A successful `exec_command` or `kill_command` clears it as well,
-  under the same "could this command write" test; `write_stdin` and
-  `read_output` polls do not. A verdict also expires 60 seconds after its last
-  counted failure. A failure that began before one of these resets is not
-  counted as a strike in the new post-reset generation.
-  `IDEMPOTENCY_KEY_REUSED` does not count because its recovery is a new key,
-  and `INTERNAL_ERROR` does not count because it is a server failure, not a
-  verdict on the request.
+- **Repeated failures now produce advice, not a hard block.** The third and
+  later identical calls run normally and return their actual result. Clients
+  should use the original error and the visible `repeat_warning`, rather than
+  expecting `REPEATED_CALL_BLOCKED`. Task-level loop budgets belong in the
+  agent host. See [repeated-failure advice](runtime-contract-v0.3.md#repeated-failure-advice)
+  for diagnostic counters, expiration, and compatibility details.
 - **Telemetry counts operations truthfully.** A command that exits nonzero,
   times out, or dies on a signal is no longer recorded as a successful tool
   call, and its terminal outcome is counted once however many times the command

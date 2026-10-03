@@ -701,42 +701,26 @@ class OperationOutcomeTests(unittest.TestCase):
 
 
 class BreakerBlockTests(unittest.TestCase):
-    """A breaker refusal is not a tool failure: no handler ran."""
+    """Executed failures and legacy breaker refusals retain distinct accounting."""
 
-    def test_a_refusal_loop_is_counted_as_blocks_not_errors(self) -> None:
-        """Verify breaker refusals have separate counters and consume no tool-error event budget."""
-        # One client that ignored REPEATED_CALL_BLOCKED and resent a bad
-        # read_output ~2000 times made v0.5.0's dashboard read 45% errors.
-        sender = _CapturingSender()
-        with scrubbed_env(CODING_TOOLS_MCP_TELEMETRY="on"), patch.object(
-            telemetry, "_get_sender", return_value=sender
-        ), tempfile.TemporaryDirectory() as tmp:
-            runtime = Runtime(Path(tmp), permission_mode="safe")
-            try:
-                runtime.telemetry.record_request(LEGACY_PROTOCOL_VERSION, "tools/call")
-                codes = [
-                    runtime.call_tool("read_file", {"path": "missing.txt"})["structuredContent"]["error"]["code"]
-                    for _ in range(50)
-                ]
-            finally:
-                runtime.close()
-        self.assertEqual(codes[:2], ["NOT_FOUND", "NOT_FOUND"])
-        self.assertEqual(set(codes[2:]), {"REPEATED_CALL_BLOCKED"})
+    def test_repeated_actual_failures_are_not_hidden_as_blocks(self) -> None:
+        """Every executed failure counts, even when accompanied by repetition advice."""
+        sender, responses = RejectedCallTests().run_session(*(
+            {"name": "read_file", "arguments": {"path": "missing.txt"}} for _ in range(10)
+        ))
+        for response in responses:
+            assert response is not None
+            result = response["result"]
+            self.assertEqual(result["structuredContent"]["error"]["code"], "NOT_FOUND")
         events = _events_by_name(sender)
-        summary = next(_properties(e) for e in events["tool_summary"] if _properties(e)["tool"] == "read_file")
-        self.assertEqual(summary["calls"], 2)
-        self.assertEqual(summary["errors"], 2)
-        self.assertEqual(summary["ok"], 0)
-        self.assertEqual(summary["breaker_blocks"], 48)
-        self.assertNotIn("err_REPEATED_CALL_BLOCKED", summary)
-        # Refusals spend none of the per-session tool_error budget.
-        self.assertEqual(
-            [_properties(e)["error_code"] for e in events.get("tool_error", [])], ["NOT_FOUND", "NOT_FOUND"]
-        )
+        summary = _properties(events["tool_summary"][0])
+        self.assertEqual(summary["calls"], 10)
+        self.assertEqual(summary["errors"], 10)
+        self.assertEqual(summary["err_NOT_FOUND"], 10)
+        self.assertEqual(summary["breaker_blocks"], 0)
         end = _properties(events["session_end"][0])
-        self.assertEqual(end["tool_calls"], 2)
-        self.assertEqual(end["breaker_blocks"], 48)
-        self.assertEqual(end["errors_dropped"], 0)
+        self.assertEqual(end["tool_calls"], 10)
+        self.assertEqual(end["breaker_blocks"], 0)
 
     def test_a_refusal_neither_extends_nor_clears_a_failure_streak(self) -> None:
         """Verify breaker refusals neither increment nor reset the underlying failure streak."""

@@ -79,14 +79,20 @@ however many later polls report it again; the non-terminal `running` is not
 counted. A command stopped by `kill_command` reports `killed`, which is not an
 operation failure.
 
-`breaker_blocks` counts calls the repeat-failure breaker refused with
-`REPEATED_CALL_BLOCKED` before any handler ran. They are excluded from
-`calls`, `errors`, `ok`, the duration buckets, and failure streaks, and they
-emit no `tool_error`: a client that ignores the refusal and resends the same
-call would otherwise turn its own retry loop into a tool failure rate. Error
-rate is `errors / calls`; breaker blocks are a separate signal of client retry
-loops. Summaries from v0.5.0 counted each refusal as a call and as an
-`err_REPEATED_CALL_BLOCKED` error, so subtract that column when reading them.
+`breaker_blocks` is retained for legacy `REPEATED_CALL_BLOCKED` results:
+those pre-handler refusals are excluded from `calls`, `errors`, `ok`, duration
+buckets, and failure streaks, and emit no `tool_error`. Current Runtime no
+longer produces these refusals, so ordinary current sessions report zero
+blocks. A repeated call now really executes: if it fails, it increments
+`calls`, `errors`, and its original `err_*` counter even when accompanied by
+nonblocking advice. Do not count advice as success or subtract these real
+failures from the error rate.
+
+Summaries from v0.5.0 counted refusals as calls and as
+`err_REPEATED_CALL_BLOCKED` errors. When comparing executed-operation error
+rates, remove those historical refusals from both numerator and denominator.
+A drop in block counts after upgrading is a policy change, not proof that
+client loops or underlying tool failures decreased.
 
 `already_applied` counts successful calls whose result reported
 `already_applied: true` — a write tool that found its change already in place

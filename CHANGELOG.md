@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- Repeated tool failures now add a nonblocking, model-visible warning instead
+  of refusing the third call. External changes and other clients can recover
+  immediately; normal permission, path, schema, revision, and resource checks
+  still apply. Diagnostic details use `recent_identical_failures` and
+  `repeat_warning`, not the old consecutive-failure/blocking wording.
+  Actual repeated executions retain their original errors and telemetry counts.
+
 - Windows process-tree cleanup uses the absolute System32 `taskkill.exe` with
   a system working directory and minimal environment, avoiding workspace/PATH
   executable lookup and inheritance of server credentials.
@@ -41,8 +48,8 @@
   terminal state. Killing an exited command reports no signal. On Windows,
   kill/timeout terminates the whole process tree, and backslash/drive paths in
   commands are checked against the workspace boundary.
-- **Repeat-failure breaker** ignores `INTERNAL_ERROR`, resets after a
-  successful writing `exec_command`/`kill_command`, and forgets verdicts after
+- **Repeat-failure advice** ignores `INTERNAL_ERROR`, resets after a
+  successful writing `exec_command`/`kill_command`, and forgets history after
   60 s. Idempotency replays ignore arguments equal to their schema default.
 - **Telemetry**: events carry `install` and `build` (source hash) so modified
   copies can be told apart from the published wheel; schema rejections are
@@ -50,13 +57,10 @@
   `unknown_tool_calls`); `tool_summary` gains `already_applied`; a deliberate
   kill is outcome `killed`, not a failure, and `running` is no longer counted
   as an outcome; benchmarks and `make` targets default telemetry off.
-- **Telemetry no longer counts `REPEATED_CALL_BLOCKED` refusals as tool
-  errors.** In v0.5.0 every refused call was recorded as a call and an error,
-  so one client that resent a failing `read_output` about 2000 times after
-  the breaker tripped pushed the whole release's error rate to 45%. Refusals
-  are now reported only as `breaker_blocks` on `tool_summary` and
-  `session_end`, and spend none of the `tool_error` budget. See
-  [docs/telemetry.md](docs/telemetry.md).
+- **Legacy breaker telemetry remains separate.** Historical
+  `REPEATED_CALL_BLOCKED` refusals count only as `breaker_blocks`; current
+  Runtime emits advice instead and counts every real execution normally.
+  See [docs/telemetry.md](docs/telemetry.md) for cross-version comparisons.
 
 ## 0.5.0 - 2026-09-14
 

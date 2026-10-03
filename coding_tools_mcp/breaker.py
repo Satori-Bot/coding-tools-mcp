@@ -1,29 +1,11 @@
-"""Refuse the third verbatim retry of a call that already failed the same way.
+"""Bounded recent-failure history for nonblocking tool advice.
 
-A deterministic failure repeated with byte-identical arguments cannot start
-succeeding: nothing about the request changed, and the error said so
-(``retryable: false``). Before v0.5.0 nothing stopped that loop — the protocol
-carries no task identity, so a model that decided to retry could retry forever.
-
-The breaker is keyed on ``(tool, normalized arguments)`` and, within that, on
-the error code, so two clients doing different work in one runtime cannot trip
-each other's breaker, and a call that starts failing a *different* way is a
-different failure rather than a continuation of the old one.
-
-Only deterministic failures count. A ``PATCH_CONFLICT`` or a
-``COMMAND_LIMIT_REACHED`` is the server saying "the same call may win next
-time", and blocking those would turn advice into a dead end. An
-``INTERNAL_ERROR`` is not counted either: it is the server failing (a full
-disk, an unexpected OS error), not evidence about the request.
-
-A verdict is only as good as the tree it was reached against, and the server
-cannot see every change to that tree — an editor, another process, or a
-command still running in the background can create the file a failed call
-was looking for. Verdicts therefore also expire: an entry whose last failure
-is older than ``BREAKER_TTL_SECONDS`` no longer blocks. A retry loop runs far
-faster than that, so the TTL does not let a loop through; it keeps a stale
-verdict from outliving the conversation that produced it, since one runtime is
-shared by every client of a workspace.
+The legacy RepeatFailureBreaker name and threshold-query API are retained for
+Python callers, but Runtime no longer uses this history to refuse execution.
+Matching arguments and past errors cannot prove that external state is unchanged.
+Counts are shared by one runtime, per tool/argument fingerprint and error code;
+they describe recent server observations, not a client's consecutive attempts.
+Success, workspace lifecycle invalidation, and expiration clear stale advice.
 """
 
 from __future__ import annotations
@@ -36,35 +18,22 @@ from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from typing import Any
 
-# The first and second identical failures are answered normally; the third
-# attempt is refused. Two is enough to establish "this is not transient" and
-# leaves room for one honest retry.
+# Start giving advice after two matching failures; this is not an execution cap.
 REPEAT_FAILURE_LIMIT = 2
-# The error a refused call answers with. The handler never ran, so telemetry
-# counts it as a breaker block rather than as a tool failure.
+# Retained for historical telemetry and compatibility, not emitted by Runtime.
 REPEATED_CALL_BLOCKED = "REPEATED_CALL_BLOCKED"
 BREAKER_CAPACITY = 256
-# How long a failure keeps counting. Long enough that no retry loop outruns
-# it, short enough that a change the server never saw cannot keep a call
-# blocked for the rest of the runtime's life.
+# Expire diagnostic history after sixty seconds without a counted failure.
 BREAKER_TTL_SECONDS = 60.0
 # Arguments that name the call rather than the work. A model that varies only
 # these has not changed anything the failure depended on.
 FINGERPRINT_IGNORED_ARGUMENTS = frozenset({"idempotency_key"})
-# This error's prescribed repair is changing an ignored naming argument. It
-# must not consume the shared work fingerprint's budget, or two collisions
-# under one key would block the same work under the fresh key the error asks
-# the caller to use.
-# INTERNAL_ERROR is the server failing rather than the request: two ENOSPC
-# writes in a row say nothing about whether the same write works once space is
-# freed, and the breaker cannot see the disk being cleaned up.
+# A fresh idempotency key is a legitimate repair, and internal failures say
+# nothing reliable about the request; neither should produce repeat advice.
 BREAKER_EXCLUDED_ERROR_CODES = frozenset({"IDEMPOTENCY_KEY_REUSED", "INTERNAL_ERROR"})
-# `retryable: true` normally means "a retry can work" — but for these codes the
-# retry has to carry different arguments, and the fingerprint proves it did
-# not. A byte-identical repeat of one of these is as deterministic as a
-# non-retryable failure. Codes outside this set that stay retryable
-# (PATCH_CONFLICT, COMMAND_LIMIT_REACHED) depend on time rather than on the
-# arguments and are never counted.
+# These usually need changed arguments or refreshed state, so repeated errors
+# merit advice even when marked retryable. Other retryable failures, such as
+# PATCH_CONFLICT and COMMAND_LIMIT_REACHED, do not contribute to advice.
 RETRY_MEANS_CHANGING_THE_CALL = frozenset(
     {
         "PATCH_CONTEXT_NOT_FOUND",
@@ -94,11 +63,11 @@ def argument_fingerprint(arguments: Mapping[str, Any]) -> str:
 
 
 class RepeatFailureBreaker:
-    """Bounded LRU of ``(tool, fingerprint) -> {error_code: consecutive count}``.
+    """Bounded LRU of ``(tool, fingerprint) -> {error_code: recent count}``.
 
     Each entry also remembers when it last failed; an entry older than
     ``ttl_seconds`` (measured on ``clock``, monotonic by default) is dropped
-    instead of blocking.
+    instead of advising.
     """
 
     def __init__(
@@ -109,7 +78,7 @@ class RepeatFailureBreaker:
         ttl_seconds: float = BREAKER_TTL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        """Initialize bounded failure tracking with a verdict TTL and an injectable clock."""
+        """Initialize bounded failure tracking with a history TTL and an injectable clock."""
         self._limit = limit
         self._capacity = capacity
         self._ttl = ttl_seconds
@@ -131,7 +100,7 @@ class RepeatFailureBreaker:
             return self._generation
 
     def blocked_error_code(self, tool: str, fingerprint: str) -> str | None:
-        """Return the error code this exact call has already exhausted, if any."""
+        """Legacy threshold query; a returned code does not block Runtime execution."""
 
         key = (tool, fingerprint)
         with self._lock:
@@ -153,7 +122,7 @@ class RepeatFailureBreaker:
         retryable: bool,
         generation: int | None = None,
     ) -> int:
-        """Count one failure and return the new consecutive count for its code."""
+        """Count one failure and return the recent count for this request and code."""
 
         if error_code in BREAKER_EXCLUDED_ERROR_CODES:
             return 0
@@ -203,12 +172,7 @@ class RepeatFailureBreaker:
             self._last_failure.pop((tool, fingerprint), None)
 
     def reset(self) -> None:
-        """Forget everything: the workspace changed, so every verdict is stale.
-
-        A deterministic failure is only deterministic against a fixed tree. Once
-        a write lands, or a command that may write starts or is killed, "this
-        call can never succeed" is no longer something the breaker knows.
-        """
+        """Forget stale diagnostic history after a possible workspace change."""
 
         with self._lock:
             self._entries.clear()

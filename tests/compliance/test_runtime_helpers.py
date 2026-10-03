@@ -2727,11 +2727,11 @@ class ErrorTextTerminalityTests(unittest.TestCase):
         text = self.error_text("COMMAND_NOT_FOUND", "Command not found.")
         self.assertEqual(text.splitlines()[0], "COMMAND_NOT_FOUND: Command not found.")
 
-    def test_terminal_failure_says_so_and_forbids_a_bare_retry(self) -> None:
+    def test_nonretryable_failure_requires_a_changed_condition(self) -> None:
         text = self.error_text("COMMAND_NOT_FOUND", "Command not found.", category="not_found")
         self.assertIn("Category: not_found.", text)
         self.assertIn("Retryable: no.", text)
-        self.assertIn("Do not repeat this call unchanged.", text)
+        self.assertIn("Do not repeat this call unchanged unless the underlying condition has changed.", text)
 
     def test_retryable_failure_is_not_told_to_stop(self) -> None:
         text = self.error_text(
@@ -2768,7 +2768,7 @@ class ErrorTextTerminalityTests(unittest.TestCase):
             text.splitlines(),
             [
                 "COMMAND_NOT_FOUND: Command not found.",
-                "Category: not_found. Retryable: no. Do not repeat this call unchanged.",
+                "Category: not_found. Retryable: no. Do not repeat this call unchanged unless the underlying condition has changed.",
                 "Retry: Start over with exec_command.",
             ],
         )
@@ -2791,7 +2791,7 @@ class ErrorTextTerminalityTests(unittest.TestCase):
                     )
                     self.assertIn("COMMAND_NOT_FOUND", text)
                     self.assertIn("Retryable: no", text)
-                    self.assertIn("Do not repeat this call unchanged.", text)
+                    self.assertIn("Do not repeat this call unchanged unless the underlying condition has changed.", text)
                     self.assertIn("exec_command", text)
                     self.assertIn(str(server_module.COMPLETED_COMMAND_TTL_SECONDS), text)
                     self.assertIn(str(server_module.MAX_RETAINED_OUTPUT_COMMANDS), text)

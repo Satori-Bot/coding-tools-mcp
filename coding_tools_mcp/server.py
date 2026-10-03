@@ -2109,9 +2109,6 @@ class Runtime:
                 self.emit_tool_trace(name, args, replayed, started_at, context=context)
                 content = spec.content_builder(dict(replayed)) if spec.content_builder else None
                 return make_tool_result(name, replayed, is_error=replayed.get("ok") is False, content=content)
-            blocked = self.breaker.blocked_error_code(name, fingerprint)
-            if blocked is not None:
-                raise self._repeat_failure_error(name, blocked)
             payload = handler(args)
             workspace_mutated = payload.pop("_workspace_mutated", None)
             payload.setdefault("ok", True)
@@ -2235,10 +2232,11 @@ class Runtime:
             details = raw_details if isinstance(raw_details, dict) else {}
             error["details"] = {
                 **details,
-                "consecutive_identical_failures": repeats,
-                "breaker": (
-                    f"This exact call has now failed {repeats} times. "
-                    "Repeating it unchanged will be refused."
+                "recent_identical_failures": repeats,
+                "repeat_warning": (
+                    f"The server recently observed {repeats} failures of this request with {code}. "
+                    "Check the current state or adjust the request before retrying. "
+                    "Repeated failures do not block execution."
                 ),
             }
 
@@ -2250,26 +2248,6 @@ class Runtime:
         # client that already knows about it, so removing it from the catalog
         # never turns a working call into "unknown tool".
         return spec is not None and spec.callable_when_hidden
-
-    def _repeat_failure_error(self, name: str, error_code: str) -> ToolFailure:
-        return ToolFailure(
-            REPEATED_CALL_BLOCKED,
-            (
-                f"This exact {name} call already failed {self.breaker.limit} times with {error_code}"
-                " and is refused until its arguments change."
-            ),
-            category="validation",
-            retryable=False,
-            details={
-                "tool": name,
-                "error_code": error_code,
-                "attempts": self.breaker.limit,
-                "retry_hint": (
-                    "Do not resend these arguments. Read the current state (read_file, git_status,"
-                    " list_dir) and construct a different call."
-                ),
-            },
-        )
 
     def _idempotency_slot(self, name: str, args: dict[str, Any]) -> tuple[str, str] | None:
         if name not in IDEMPOTENT_TOOLS:

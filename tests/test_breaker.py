@@ -80,7 +80,7 @@ class BreakerInRuntimeTests(unittest.TestCase):
     def call(self, runtime: Runtime, args: dict[str, object]) -> dict[str, object]:
         return runtime.call_tool("read_file", args)
 
-    def test_a_verbatim_retry_loop_terminates_with_a_distinct_error(self) -> None:
+    def test_a_verbatim_retry_preserves_the_real_error_and_adds_advice(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Runtime(Path(tmp), permission_mode="safe")
             try:
@@ -91,11 +91,11 @@ class BreakerInRuntimeTests(unittest.TestCase):
             finally:
                 runtime.close()
         self.assertEqual(first["structuredContent"]["error"]["code"], "NOT_FOUND")
-        # The second failure already warns that the next one will be refused.
-        self.assertEqual(second["structuredContent"]["error"]["details"]["consecutive_identical_failures"], 2)
-        self.assertEqual(third["structuredContent"]["error"]["code"], "REPEATED_CALL_BLOCKED")
+        # The second failure advises without vetoing the next attempt.
+        self.assertEqual(second["structuredContent"]["error"]["details"]["recent_identical_failures"], 2)
+        self.assertEqual(third["structuredContent"]["error"]["code"], "NOT_FOUND")
         self.assertIs(third["structuredContent"]["error"]["retryable"], False)
-        self.assertIn("REPEATED_CALL_BLOCKED", third["content"][0]["text"])
+        self.assertIn("Repeated failures do not block execution.", third["content"][0]["text"])
 
     def test_a_returned_ok_false_payload_counts_as_a_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -114,10 +114,10 @@ class BreakerInRuntimeTests(unittest.TestCase):
                 runtime.close()
         self.assertEqual(first["structuredContent"]["error"]["code"], "ELICITATION_UNSUPPORTED")
         self.assertEqual(
-            second["structuredContent"]["error"]["details"]["consecutive_identical_failures"],
+            second["structuredContent"]["error"]["details"]["recent_identical_failures"],
             2,
         )
-        self.assertEqual(third["structuredContent"]["error"]["code"], "REPEATED_CALL_BLOCKED")
+        self.assertEqual(third["structuredContent"]["error"]["code"], "ELICITATION_UNSUPPORTED")
 
     def test_revision_required_needs_a_changed_call_to_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -135,10 +135,10 @@ class BreakerInRuntimeTests(unittest.TestCase):
                 runtime.close()
         self.assertEqual(first["structuredContent"]["error"]["code"], "REVISION_REQUIRED")
         self.assertEqual(
-            second["structuredContent"]["error"]["details"]["consecutive_identical_failures"],
+            second["structuredContent"]["error"]["details"]["recent_identical_failures"],
             2,
         )
-        self.assertEqual(third["structuredContent"]["error"]["code"], "REPEATED_CALL_BLOCKED")
+        self.assertEqual(third["structuredContent"]["error"]["code"], "REVISION_REQUIRED")
 
     def test_changing_the_arguments_is_never_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,7 +159,7 @@ class BreakerInRuntimeTests(unittest.TestCase):
                 self.call(runtime, {"path": "late.txt"})
                 self.assertEqual(
                     self.call(runtime, {"path": "late.txt"})["structuredContent"]["error"]["code"],
-                    "REPEATED_CALL_BLOCKED",
+                    "NOT_FOUND",
                 )
                 created = runtime.call_tool(
                     "apply_patch",
@@ -216,7 +216,7 @@ class BreakerInRuntimeTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     third["structuredContent"]["error"]["code"],
-                    "REPEATED_CALL_BLOCKED",
+                    "NOT_FOUND",
                 )
 
     def test_failures_started_before_a_reset_do_not_strike_the_new_generation(self) -> None:
@@ -474,7 +474,7 @@ class BreakerInRuntimeTests(unittest.TestCase):
                 runtime.close()
         self.assertEqual(first["structuredContent"]["error"]["code"], "PATCH_CONTEXT_NOT_FOUND")
         self.assertEqual(second["structuredContent"]["error"]["code"], "PATCH_CONTEXT_NOT_FOUND")
-        self.assertEqual(third["structuredContent"]["error"]["code"], "REPEATED_CALL_BLOCKED")
+        self.assertEqual(third["structuredContent"]["error"]["code"], "PATCH_CONTEXT_NOT_FOUND")
 
     def test_a_structured_only_command_with_a_write_path_clears_stale_verdicts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -528,10 +528,9 @@ class BreakerInRuntimeTests(unittest.TestCase):
             finally:
                 runtime.close()
         self.assertEqual(command["structuredContent"]["operation_outcome"], "exited_0")
-        if mutation["enforced"]:
-            self.assertEqual(read["structuredContent"]["error"]["code"], "REPEATED_CALL_BLOCKED")
-        else:
-            self.assertEqual(read["structuredContent"]["error"]["code"], "NOT_FOUND")
+        self.assertEqual(read["structuredContent"]["error"]["code"], "NOT_FOUND")
+        details = read["structuredContent"]["error"]["details"]
+        self.assertEqual(details.get("recent_identical_failures"), 3 if mutation["enforced"] else None)
 
     def test_unenforced_structured_only_mode_clears_stale_verdicts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -620,7 +619,7 @@ class BreakerInRuntimeTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     self.call(runtime, {"path": "late.txt"})["structuredContent"]["error"]["code"],
-                    "REPEATED_CALL_BLOCKED",
+                    "NOT_FOUND",
                 )
             finally:
                 runtime.close()
@@ -685,8 +684,8 @@ class BreakerTtlTests(unittest.TestCase):
         self.assertEqual(REPEAT_FAILURE_LIMIT, 2)
         self.assertEqual(BREAKER_TTL_SECONDS, 60)
 
-    def test_an_externally_created_file_is_readable_once_the_verdict_expires(self) -> None:
-        """Verify an expired NOT_FOUND verdict permits reading an externally created file."""
+    def test_an_externally_created_file_is_readable_before_and_after_expiry(self) -> None:
+        """Verify recent NOT_FOUND history never hides an externally created file."""
         clock = _Clock()
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
@@ -696,12 +695,12 @@ class BreakerTtlTests(unittest.TestCase):
                 runtime.call_tool("read_file", {"path": "late.txt"})
                 runtime.call_tool("read_file", {"path": "late.txt"})
                 (workspace / "late.txt").write_text("created\n", encoding="utf-8")
-                blocked = runtime.call_tool("read_file", {"path": "late.txt"})
+                immediate = runtime.call_tool("read_file", {"path": "late.txt"})
                 clock.now += BREAKER_TTL_SECONDS + 1
                 read = runtime.call_tool("read_file", {"path": "late.txt"})
             finally:
                 runtime.close()
-        self.assertEqual(blocked["structuredContent"]["error"]["code"], "REPEATED_CALL_BLOCKED")
+        self.assertFalse(immediate["isError"], immediate)
         self.assertFalse(read["isError"], read)
 
 
@@ -734,7 +733,7 @@ class InternalErrorIsNotCountedTests(unittest.TestCase):
         self.assertEqual(len(calls), 4)
         for result in results:
             self.assertEqual(result["structuredContent"]["error"]["code"], "INTERNAL_ERROR")
-            self.assertNotIn("consecutive_identical_failures", result["structuredContent"]["error"]["details"])
+            self.assertNotIn("recent_identical_failures", result["structuredContent"]["error"]["details"])
 
 
 class CommandLifecycleResetTests(unittest.TestCase):
@@ -778,10 +777,10 @@ class CommandLifecycleResetTests(unittest.TestCase):
         ):
             with self.subTest(tool=tool):
                 read = self.blocked_then(tool, args, {"command_id": "bg", "operation_outcome": "running"})
-                self.assertEqual(read["structuredContent"]["error"]["code"], "REPEATED_CALL_BLOCKED")
+                self.assertFalse(read["isError"], read)
 
     def test_a_failed_exec_command_keeps_verdicts(self) -> None:
-        """Verify rejected command starts can still exhaust the repeated-failure budget."""
+        """Verify rejected command starts retain their real error on repeated attempts."""
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Runtime(Path(tmp), permission_mode="trusted")
 
@@ -794,7 +793,7 @@ class CommandLifecycleResetTests(unittest.TestCase):
                 results = [runtime.call_tool("exec_command", {"cmd": "true"}) for _ in range(3)]
             finally:
                 runtime.close()
-        self.assertEqual(results[2]["structuredContent"]["error"]["code"], "REPEATED_CALL_BLOCKED")
+        self.assertEqual(results[2]["structuredContent"]["error"]["code"], "INVALID_ARGUMENT")
 
     def test_a_command_that_cannot_write_keeps_verdicts(self) -> None:
         """Verify enforced structured-only execution preserves existing failure verdicts."""
@@ -816,8 +815,9 @@ class CommandLifecycleResetTests(unittest.TestCase):
                 read = runtime.call_tool("read_file", {"path": "late.txt"})
             finally:
                 runtime.close()
-        expected = "REPEATED_CALL_BLOCKED" if enforced else "NOT_FOUND"
-        self.assertEqual(read["structuredContent"]["error"]["code"], expected)
+        self.assertEqual(read["structuredContent"]["error"]["code"], "NOT_FOUND")
+        details = read["structuredContent"]["error"]["details"]
+        self.assertEqual(details.get("recent_identical_failures"), 3 if enforced else None)
 
 
 class IdempotencyDefaultNormalizationTests(unittest.TestCase):
