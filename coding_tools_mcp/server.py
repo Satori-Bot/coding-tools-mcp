@@ -2637,7 +2637,7 @@ class Runtime:
         actual_end = min(end, total_lines)
         if truncated and selected_parts:
             actual_end = min(total_lines, start_line + len(selected_parts) - 1)
-        next_start_line = actual_end + 1 if truncated and actual_end < total_lines else None
+        next_start_line = actual_end + 1 if truncated and actual_end < min(end, total_lines) else None
         warnings = []
         if truncated:
             warnings.append("content truncated")
@@ -2673,6 +2673,8 @@ class Runtime:
                 "start_line": next_start_line,
                 "max_bytes": max_bytes,
             }
+            if requested_end is not None:
+                continuation["end_line"] = requested_end
             if result.get("line_numbers"):
                 continuation["line_numbers"] = True
             result["next_action"] = {"tool": "read_file", "arguments": continuation}

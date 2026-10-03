@@ -225,6 +225,26 @@ class RevisionFormatTests(RuntimeCase):
 class ReadFileLineNumberTests(RuntimeCase):
     """Item 4."""
 
+    def test_continuation_respects_the_requested_range(self) -> None:
+        """Keep bounded reads inside their original end_line or max_lines range."""
+        for bounds in ({"end_line": 2}, {"max_lines": 2}):
+            with self.subTest(bounds=bounds):
+                first = self.call("read_file", {"path": "a.txt", "max_bytes": 3, **bounds})
+                action = first["structuredContent"]["next_action"]
+                second = self.call(action["tool"], action["arguments"])["structuredContent"]
+                self.assertEqual(second["content"], "l2\n")
+                self.assertFalse(second["truncated"])
+                self.assertIsNone(second["next_start_line"])
+                self.assertNotIn("next_action", second)
+
+    def test_partial_last_requested_line_has_no_out_of_range_continuation(self) -> None:
+        """An oversized bounded line asks for a larger budget, not a later line."""
+        result = self.call("read_file", {"path": "a.txt", "max_bytes": 1, "end_line": 1})
+        payload = result["structuredContent"]
+        self.assertTrue(payload["truncated"])
+        self.assertIsNone(payload["next_start_line"])
+        self.assertNotIn("next_action", payload)
+
     def test_default_output_is_unchanged(self) -> None:
         """Verify ordinary reads retain unnumbered text and omit the line_numbers field."""
         result = self.call("read_file", {"path": "a.txt"})
