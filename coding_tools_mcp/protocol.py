@@ -497,7 +497,9 @@ def _call_tool(runtime: Any, params: dict[str, Any], context: RequestContext) ->
     """Validate tools/call parameters, record rejected arguments, and dispatch the call."""
     if not isinstance(params.get("name"), str):
         raise JsonRpcError(-32602, "tools/call requires a tool name")
-    arguments = params.get("arguments", {})
+    arguments = params.get("arguments")
+    if arguments is None:
+        arguments = {}
     if not isinstance(arguments, dict):
         # Rejected before the runtime sees the call, so tell its telemetry.
         record_rejected = getattr(runtime, "record_rejected_tool_call", None)

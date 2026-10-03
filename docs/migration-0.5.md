@@ -81,7 +81,8 @@ migrating clients or prompts from 0.3:
 - Replace ignored or abbreviated `@@` labels with real whole-line anchors.
   Recheck patches that relied on unrestricted searches or ignored EOF markers.
 - Inspect matching warnings, and use `idempotency_key` for safe retries after
-  a lost response. Successful no-op results no longer necessarily imply a write.
+  a lost response. A successful result no longer guarantees a write happened;
+  check `already_applied`.
 
 See the authoritative [patch behavior reference](tools-and-schemas.md#patch-behavior)
 for locating, overwrite, whitespace-matching, and already-applied rules,

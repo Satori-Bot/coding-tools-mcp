@@ -957,7 +957,7 @@ class RejectedCallTests(unittest.TestCase):
 
     def test_falsy_non_object_arguments_are_rejected_and_counted(self) -> None:
         """Verify falsy non-object arguments are rejected and counted instead of defaulting to {}."""
-        invalid = ([], "", False, 0, None)
+        invalid = ([], "", False, 0)
         sender, responses = self.run_session(*(
             {"name": "server_info", "arguments": value} for value in invalid
         ))
@@ -967,6 +967,23 @@ class RejectedCallTests(unittest.TestCase):
                 self.assertEqual(response.get("error", {}).get("code"), -32602)
         summary = _properties(_events_by_name(sender)["tool_summary"][0])
         self.assertEqual(summary["err_INVALID_PARAMS"], len(invalid))
+
+    def test_missing_and_null_arguments_preserve_empty_object_compatibility(self) -> None:
+        sender, responses = self.run_session(
+            {"name": "server_info"},
+            {"name": "server_info", "arguments": None},
+            {"name": "server_info", "arguments": {}},
+        )
+        for response in responses:
+            assert response is not None
+            self.assertNotIn("error", response)
+            self.assertIn("result", response)
+        by_name = _events_by_name(sender)
+        self.assertNotIn("tool_error", by_name)
+        summary = _properties(by_name["tool_summary"][0])
+        self.assertEqual(summary["calls"], 3)
+        self.assertEqual(summary["ok"], 3)
+        self.assertEqual(summary["errors"], 0)
 
 
 class AlreadyAppliedCounterTests(unittest.TestCase):

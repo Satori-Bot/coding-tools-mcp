@@ -12,7 +12,8 @@
 
 - Dry runs from both write tools label their proposed revision as
   `would_be_revision`. Invalid `tools/call` argument values, including empty
-  arrays and explicit `null`, are rejected rather than treated as `{}`.
+  arrays, are rejected rather than treated as `{}`. Missing or `null` arguments
+  retain their existing empty-object behavior.
   `read_output` text includes eviction warnings even on the final page.
 - **`apply_patch` no longer reports success it did not earn, and follows
   Codex's locating rules.** A hunk counts as already applied only on strong
