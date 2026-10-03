@@ -15,15 +15,19 @@ class WindowsSubprocessEncodingTests(unittest.TestCase):
         workspace = Workspace(Path.cwd())
         workspace.git_path = "git"
         completed = subprocess.CompletedProcess(
-            ["git"], 0, stdout="ignored-文件.txt\0", stderr=""
+            ["git"], 0, stdout="ignored-文件.txt\0".encode("utf-8"), stderr=b""
         )
 
-        with patch.object(server_module.subprocess, "run", return_value=completed) as run:
+        with patch.object(
+            server_module.subprocess, "run", return_value=completed
+        ) as run:
             ignored = workspace.git_ignored_paths(["ignored-文件.txt"])
 
         self.assertEqual(ignored, {"ignored-文件.txt"})
-        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
-        self.assertEqual(run.call_args.kwargs["errors"], "replace")
+        self.assertFalse(run.call_args.kwargs["text"])
+        self.assertEqual(
+            run.call_args.kwargs["input"], "ignored-文件.txt\0".encode("utf-8")
+        )
 
     def test_fd_file_listing_decodes_as_utf8(self) -> None:
         runtime = Runtime(Path.cwd())
@@ -35,7 +39,9 @@ class WindowsSubprocessEncodingTests(unittest.TestCase):
         try:
             with (
                 patch.object(server_module, "cached_which", return_value="fd"),
-                patch.object(server_module.subprocess, "run", return_value=completed) as run,
+                patch.object(
+                    server_module.subprocess, "run", return_value=completed
+                ) as run,
             ):
                 result = runtime._list_files_with_fd(
                     runtime.workspace.resolve_existing("."),
@@ -51,7 +57,7 @@ class WindowsSubprocessEncodingTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
-        self.assertEqual(run.call_args.kwargs["errors"], "replace")
+        self.assertEqual(run.call_args.kwargs["errors"], "strict")
 
     def test_rg_search_decodes_as_utf8(self) -> None:
         runtime = Runtime(Path.cwd())
@@ -92,7 +98,7 @@ class WindowsSubprocessEncodingTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(popen.call_args.kwargs["encoding"], "utf-8")
-        self.assertEqual(popen.call_args.kwargs["errors"], "replace")
+        self.assertEqual(popen.call_args.kwargs["errors"], "strict")
 
 
 if __name__ == "__main__":

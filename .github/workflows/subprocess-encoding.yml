@@ -1,0 +1,56 @@
+name: Subprocess encoding boundaries
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  encoding:
+    name: ${{ matrix.os }} ${{ matrix.locale }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            locale: C.UTF-8
+          - os: windows-latest
+            locale: Chinese_China.936
+            default_encoding: cp936
+          - os: windows-latest
+            locale: English_United States.1252
+    env:
+      CODING_TOOLS_MCP_TELEMETRY: 'off'
+      PYTHONIOENCODING: utf-8
+      AUDIT_LOCALE: ${{ matrix.locale }}
+      AUDIT_DEFAULT_ENCODING: ${{ matrix.default_encoding }}
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.11'
+      - name: Install real search tools on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fd-find ripgrep
+      - name: Install real search tools on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install fd ripgrep --yes --no-progress
+      - name: Install runtime
+        run: python -m pip install -e .
+      - name: Probe real byte boundaries
+        shell: bash
+        run: python -X utf8=0 -m tests.test_subprocess_encoding_boundaries 2>&1 | tee encoding-results.txt
+      - name: Save evidence including failures
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: encoding-${{ matrix.os }}-${{ matrix.locale }}
+          path: encoding-results.txt
+          if-no-files-found: warn
+          retention-days: 14
