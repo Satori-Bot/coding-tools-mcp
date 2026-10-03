@@ -69,41 +69,23 @@ commands.
 
 ## `apply_patch` behavior changes since 0.3
 
-These changes shipped in 0.5.0 without being listed as breaking. A client or
-prompt that relied on the 0.3 behavior has to adjust.
+These changes shipped in 0.5.0 without being listed as breaking. When
+migrating clients or prompts from 0.3:
 
-- **`*** Add File` overwrites an existing file**, and **`*** Move to:`
-  overwrites an existing destination**. 0.3 refused both with
-  `PATCH_FAILED`. Check for the path first if an overwrite would be a mistake.
-- **Pure-addition hunks append at EOF.** A hunk with only `+` lines used to be
-  inserted at the top of the file; it now appends at the end of the file,
-  matching Codex, even when it carries an `@@` anchor (the anchor is only
-  validated). Include a context line to place an addition anywhere else.
-- **A path may be the primary path of only one operation per envelope.** 0.3
-  chained two `*** Update File` blocks for the same file; 0.5 rejects the
-  envelope with `PATCH_FAILED` before writing anything (the Codex tool-entry
-  contract). Put every hunk for one file in a single `*** Update File` block.
-- **`@@ <context>` text is enforced, Codex-style.** 0.3 ignored it. The anchor
-  must match a whole line (`@@ def greet` does not find `def greet(name):`);
-  a miss is `PATCH_CONTEXT_NOT_FOUND`. The hunk then takes the first match
-  below the anchor, and consecutive `@@` lines are found in turn.
-- **Hunks are located in file order.** 0.3 searched the whole file for each
-  hunk, so hunk order did not matter and a repeated block was always
-  `PATCH_CONTEXT_AMBIGUOUS`. 0.5 follows Codex's forward cursor: a hunk is
-  never matched above the previous one, and a repeated block below an anchor
-  resolves to the first copy. Order hunks top to bottom and use `@@` to pick a
-  copy.
-- **`*** End of File` is enforced.** 0.3 ignored it; a hunk carrying it now
-  has to match at the end of the file.
-- **Whitespace-tolerant matching.** 0.3 matched context exactly; 0.5 may
-  place a hunk after ignoring trailing whitespace or indentation width and
-  says so in `match_quality` and `warnings`.
-- **Success without a write.** A hunk whose result is already present is
-  skipped, and a patch whose hunks were all present succeeds with
-  `already_applied: true`, `additions: 0`, and `removals: 0` instead of
-  failing. Skipped hunks never count toward `additions` or `removals`. A hunk
-  whose old text still matches is applied again, as in Codex, so resending an
-  addition duplicates it; send `idempotency_key` to make a resend safe.
+- Check destination paths before additions or moves if overwriting would be
+  a mistake; 0.3 refused those overwrites.
+- Include context when an insertion belongs somewhere other than EOF;
+  pure additions no longer go at the top of the file.
+- Combine all hunks for a file into one update block and order them from top
+  to bottom. Repeated primary paths are rejected rather than chained.
+- Replace ignored or abbreviated `@@` labels with real whole-line anchors.
+  Recheck patches that relied on unrestricted searches or ignored EOF markers.
+- Inspect matching warnings, and use `idempotency_key` for safe retries after
+  a lost response. Successful no-op results no longer necessarily imply a write.
+
+See the authoritative [patch behavior reference](tools-and-schemas.md#patch-behavior)
+for locating, overwrite, whitespace-matching, and already-applied rules,
+including the intentional differences from Codex.
 
 ## New behavior you may want to adopt
 

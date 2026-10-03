@@ -252,6 +252,32 @@ class ReadFileLineNumberTests(RuntimeCase):
         self.assertTrue(payload["truncated"])
         self.assertIs(payload["next_action"]["arguments"]["line_numbers"], True)
 
+    def test_byte_limited_pages_follow_physical_lines_without_overlap(self) -> None:
+        for endings in (("\r",) * 4, ("\r\n",) * 4, ("\n",) * 4, ("\r\n", "\r", "\n", "")):
+            with self.subTest(endings=endings):
+                lines = [f"line{n}{ending}" for n, ending in enumerate(endings, 1)]
+                (self.workspace / "paged.txt").write_bytes("".join(lines).encode())
+                args: dict[str, Any] = {"path": "paged.txt", "max_bytes": 14, "line_numbers": True}
+                seen: list[str] = []
+                while True:
+                    result = self.call("read_file", args)
+                    self.assertFalse(result["isError"], result)
+                    payload = result["structuredContent"]
+                    start, end = payload["start_line"], payload["end_line"]
+                    expected = lines[start - 1:end]
+                    self.assertEqual(payload["content"], "".join(expected))
+                    self.assertEqual(payload["output_lines"], len(expected))
+                    self.assertLessEqual(payload["bytes_read"], 14)
+                    self.assertTrue(self.text(result).endswith("".join(
+                        f"{number}\t{line}" for number, line in enumerate(expected, start)
+                    )))
+                    seen.extend(expected)
+                    if "next_action" not in payload:
+                        break
+                    args = payload["next_action"]["arguments"]
+                    self.assertEqual(args["start_line"], end + 1)
+                self.assertEqual(seen, lines)
+
 
 class LenientEditFieldTests(unittest.TestCase):
     """Item 5: unambiguous schema-following spellings are accepted."""

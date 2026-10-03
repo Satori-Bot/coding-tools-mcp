@@ -2595,6 +2595,8 @@ class Runtime:
         selected_bytes = 0
         total_lines = 0
         selection_complete = False
+        truncated_by = None
+        first_line_exceeds_limit = False
         # The revision is folded into the pass that already walks every line,
         # so it names the bytes this call decoded rather than whatever a second
         # open would have found a moment later.
@@ -2610,27 +2612,36 @@ class Runtime:
                         continue
                     if selection_complete:
                         continue
-                    selected_parts.append(line)
-                    selected_bytes += len(line_bytes)
-                    if len(selected_parts) > DEFAULT_MAX_LINES or selected_bytes > max_bytes:
+                    if len(selected_parts) >= DEFAULT_MAX_LINES:
+                        truncated_by = "lines"
                         selection_complete = True
+                    elif selected_bytes + len(line_bytes) > max_bytes:
+                        truncated_by = "bytes"
+                        selection_complete = True
+                        if not selected_parts:
+                            # Preserve the existing oversized-first-line preview.
+                            # All other pages end at a physical line boundary.
+                            preview = truncate_text_head(line, max_bytes=max_bytes)
+                            selected_parts.append(preview.content)
+                            first_line_exceeds_limit = True
+                    else:
+                        selected_parts.append(line)
+                        selected_bytes += len(line_bytes)
         except UnicodeDecodeError as exc:
             raise ToolFailure("UNSUPPORTED_ENCODING", "File is not valid utf-8.", category="validation") from exc
         selected = "".join(selected_parts)
-        truncation = truncate_text_head(selected, max_lines=DEFAULT_MAX_LINES, max_bytes=max_bytes)
-        selected = truncation.content
-        truncated = truncation.truncated or selection_complete
+        truncated = selection_complete
         end = requested_end if requested_end is not None else total_lines
         if end < start_line:
             selected = ""
         actual_end = min(end, total_lines)
-        if truncated and truncation.output_lines > 0:
-            actual_end = min(total_lines, start_line + truncation.output_lines - 1)
+        if truncated and selected_parts:
+            actual_end = min(total_lines, start_line + len(selected_parts) - 1)
         next_start_line = actual_end + 1 if truncated and actual_end < total_lines else None
         warnings = []
         if truncated:
             warnings.append("content truncated")
-        if truncation.first_line_exceeds_limit:
+        if first_line_exceeds_limit:
             warnings.append("first selected line exceeds max_bytes")
         result = {
             "path": resolved.display,
@@ -2645,10 +2656,10 @@ class Runtime:
             "total_bytes": total_bytes,
             "bytes_read": len(selected.encode("utf-8")),
             "truncated": truncated,
-            "truncated_by": truncation.truncated_by or ("bytes" if selection_complete else None),
-            "first_line_exceeds_limit": truncation.first_line_exceeds_limit,
-            "output_lines": truncation.output_lines,
-            "output_bytes": truncation.output_bytes,
+            "truncated_by": truncated_by,
+            "first_line_exceeds_limit": first_line_exceeds_limit,
+            "output_lines": len(selected_parts),
+            "output_bytes": len(selected.encode("utf-8")),
             "next_start_line": next_start_line,
             "warnings": warnings,
         }

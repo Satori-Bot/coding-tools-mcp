@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Byte-limited `read_file` pages use physical LF, CRLF, or CR line boundaries,
+  keeping numbered text, reported ranges, and continuation lines consistent.
+
 - Dry runs from both write tools label their proposed revision as
   `would_be_revision`. Invalid `tools/call` argument values, including empty
   arrays and explicit `null`, are rejected rather than treated as `{}`.
