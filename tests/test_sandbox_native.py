@@ -502,6 +502,77 @@ class NativeSeatbeltProfileTests(unittest.TestCase):
             raise unittest.SkipTest("sandbox-exec is unavailable")
         _trusted_install(cls.launcher, (), root_owned=True)
 
+    def test_process_group_escape_and_syscall_filter_limit(self):
+        """Characterize the blocker; this is not strict-backend acceptance.
+
+        Every probe is finite and reaps its own fork/spawn child. No daemon
+        waits in the background. Blocking setsid/setpgid syscall entry does
+        not cover posix_spawn's in-kernel process-group attribute handling.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory).resolve()
+            spec = SandboxSpec(workspace, (workspace, *system_read_roots()), (workspace,), ())
+            base_profile = seatbelt_profile(spec)
+            # Darwin syscall numbers are shared by arm64 and x86_64. These
+            # test-only restrictions are deliberately NOT a production fix:
+            # posix_spawn can perform these transitions inside the kernel.
+            syscall_profile = base_profile + "\n" + "\n".join((
+                "(disable-syscall-inference)",
+                "(allow syscall-unix)",
+                "(deny syscall-unix (syscall-number 82 147))",
+            ))
+            interpreter = str(Path(sys.executable).resolve())
+            environment = {"PATH": "/usr/bin:/bin", "HOME": str(workspace), "TMPDIR": str(workspace)}
+            probe = """
+import ctypes, json, os, sys
+operation = sys.argv[1]
+original_group = os.getpgrp()
+def result(error=None):
+    print(json.dumps({'operation': operation, 'escaped_group': os.getpgrp() != original_group,
+                      'error': error}), flush=True)
+if operation == 'spawn_setpgroup':
+    code = 'import json,os; print(json.dumps({"operation":"spawn_setpgroup","escaped_group":os.getpgrp()!=' + str(original_group) + ',"error":None}),flush=True)'
+    child = os.posix_spawn(sys.executable, [sys.executable, '-c', code], os.environ, setpgroup=0)
+    _, status = os.waitpid(child, 0)
+    os._exit(os.waitstatus_to_exitcode(status))
+child = os.fork()
+if child:
+    _, status = os.waitpid(child, 0)
+    os._exit(os.waitstatus_to_exitcode(status))
+try:
+    if operation == 'setsid': os.setsid()
+    elif operation == 'setpgid': os.setpgid(0, 0)
+    elif operation == 'daemon':
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.daemon.argtypes = [ctypes.c_int, ctypes.c_int]
+        libc.daemon.restype = ctypes.c_int
+        if libc.daemon(1, 1) != 0: raise OSError(ctypes.get_errno(), 'daemon')
+    else: raise AssertionError(operation)
+except OSError as error:
+    result(error.errno)
+else:
+    result()
+os._exit(0)
+"""
+            evidence = {}
+            for label, profile in (("current_profile", base_profile), ("syscall_filter_only", syscall_profile)):
+                evidence[label] = {}
+                for operation in ("setsid", "setpgid", "daemon", "spawn_setpgroup"):
+                    with self.subTest(profile=label, operation=operation):
+                        completed = subprocess.run(
+                            [str(self.launcher), "-p", profile, interpreter, "-c", probe, operation],
+                            cwd=workspace, env=environment, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
+                            start_new_session=True, check=False,
+                        )
+                        self.assertEqual(completed.returncode, 0, (label, operation, completed.stdout, completed.stderr))
+                        observed = json.loads(completed.stdout)
+                        evidence[label][operation] = observed
+                        expected_escape = label == "current_profile" or operation == "spawn_setpgroup"
+                        self.assertEqual(observed["escaped_group"], expected_escape, observed)
+                        self.assertEqual(observed["error"], None if expected_escape else 1, observed)
+            print("SEATBELT_LIFETIME_LIMIT=" + json.dumps(evidence, sort_keys=True), flush=True)
+
     def test_native_seatbelt_file_network_rules_with_reachable_baselines(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory).resolve()

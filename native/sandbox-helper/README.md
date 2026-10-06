@@ -98,17 +98,27 @@ filter memory and raw descriptor I/O before the trusted parent starts threads.
 A deny-default Seatbelt profile compiler exists in Python, but installing a
 filesystem/network profile alone does not satisfy the promised descendant
 lifetime boundary. Native macOS strict execution therefore rejects before
-command startup. In particular:
+command startup. This is an implementation gap, not a claim that secure macOS
+supervision is impossible. In particular:
 
-* Apple's XNU `setsid_internal` directly changes process-group/session membership
-  without a MAC sandbox-policy callback. Process-group termination cannot
-  contain a setsid/double-fork descendant.
-  [Apple source](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_prot.c#L484)
+* Process-group termination does not contain children that change groups or
+  sessions. The current profile permits these transitions. XNU does have a
+  [generic Unix-syscall sandbox callback](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/dev/arm/systemcalls.c),
+  and [WebKit uses syscall-number filters](https://github.com/WebKit/WebKit/blob/1c1ab7c623f434b413e8a7c7016539630aa0b35b/Source/WebKit/WebProcess/com.apple.WebProcess.sb.in).
+  The absence of a dedicated callback inside `setsid_internal` is therefore
+  **not** proof that `setsid` cannot be filtered.
+* Filtering only the `setsid` and `setpgid` syscall entries is insufficient:
+  [XNU handles `posix_spawn` process-group/session attributes inside the kernel](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/kern_exec.c).
+  Denying all `posix_spawn` calls would restrict ordinary toolchains as well.
+  There is no implemented, validated attribute-aware spawn broker or equivalent
+  lifetime supervisor here. Native tests separately characterize direct
+  `setsid`, `setpgid`, `daemon`, and `posix_spawn` group transitions; their
+  test-only syscall profile is not a supported backend.
 * Darwin explicitly marks `NOTE_TRACK`, `NOTE_TRACKERR`, and `NOTE_CHILD`
   unsupported since macOS 10.5. FreeBSD kqueue's automatic descendant tracking
   cannot simply be ported. `NOTE_FORK` notifications or process-list polling
   leave a fork/reparent/registration race.
-  [Apple source](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/event.h#L364)
+  [Apple source](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/sys/event.h)
 
 A stronger implementation needs a separately validated OS-supported supervisor
 or VM. Privileged Endpoint Security deployment would require separate
