@@ -117,7 +117,7 @@ class RequiredDocsTests(unittest.TestCase):
 
         release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         for needle in (
-            'tags: ["v*"]',
+            "branches: [main]",
             "scripts/check_release_versions.py",
             "./.github/workflows/compliance.yml",
             "./.github/workflows/real-workloads.yml",
@@ -126,7 +126,7 @@ class RequiredDocsTests(unittest.TestCase):
             "pypa/gh-action-pypi-publish",
             "npm@11.18.0",
             "npm publish ./dist/*.tgz --access public --provenance",
-            "gh release create",
+            "scripts.finalize_release",
         ):
             with self.subTest(workflow="release", needle=needle):
                 self.assertIn(needle, release)
