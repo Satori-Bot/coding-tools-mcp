@@ -41,6 +41,11 @@ on:
         required: false
         type: boolean
         default: true
+      timeout_minutes:
+        description: "Whole-job time limit, an integer from 1 through 180 minutes"
+        required: false
+        type: number
+        default: 180
   workflow_call:
     inputs:
       source_ref:
@@ -71,6 +76,10 @@ on:
         required: false
         type: boolean
         default: true
+      timeout_minutes:
+        required: false
+        type: number
+        default: 180
 
 permissions:
   contents: read
@@ -78,7 +87,7 @@ permissions:
 jobs:
   swebench-lite:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: ${{ inputs.timeout_minutes || 180 }}
     env:
       SOURCE_REF: ${{ inputs.source_ref || github.sha }}
       INSTANCE_IDS: ${{ inputs.instance_ids }}
@@ -86,12 +95,14 @@ jobs:
       PREDICTION_SOURCE: ${{ inputs.prediction_source }}
       INSTALL_SWEBENCH: ${{ inputs.install_swebench }}
       REQUIRE_PASS: ${{ inputs.require_evaluation_pass }}
+      TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
       CODING_TOOLS_MCP_TELEMETRY: "off"
-      EVIDENCE_ROOT: ${{ runner.temp }}/swebench-evidence-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Initialize current-run evidence
         run: |
-          mkdir -p "$EVIDENCE_ROOT"
+          EVIDENCE_ROOT="$(mktemp -d "$RUNNER_TEMP/swebench-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-XXXXXX")"
+          export EVIDENCE_ROOT
+          printf 'EVIDENCE_ROOT=%s\n' "$EVIDENCE_ROOT" >> "$GITHUB_ENV"
           python - <<'PY'
           import json, os
           from pathlib import Path
@@ -112,6 +123,12 @@ jobs:
             both|reference_patch|mcp_reference_replay|checked_in) ;;
             *) echo "Unsupported prediction source" >&2; exit 1 ;;
           esac
+          python - <<'PY'
+          import os
+          timeout = int(os.environ["TIMEOUT_MINUTES"])
+          if not 1 <= timeout <= 180:
+              raise SystemExit("timeout_minutes must be an integer from 1 through 180")
+          PY
 
       - name: Check out repository
         uses: actions/checkout@v6.0.2

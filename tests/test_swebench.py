@@ -228,10 +228,10 @@ class WorkflowTests(unittest.TestCase):
     def test_only_current_attempt_evidence_is_uploaded(self) -> None:
         workflow = yaml.safe_load((pinned.ROOT.parents[1] / ".github/workflows/swebench-lite.yml").read_text())
         job = workflow["jobs"]["swebench-lite"]
-        self.assertIn("runner.temp", job["env"]["EVIDENCE_ROOT"])
-        self.assertIn("github.run_id", job["env"]["EVIDENCE_ROOT"])
-        self.assertIn("github.run_attempt", job["env"]["EVIDENCE_ROOT"])
-        self.assertIn("attempt.json", job["steps"][0]["run"])
+        self.assertNotIn("EVIDENCE_ROOT", job["env"])
+        initialization = job["steps"][0]["run"]
+        for required in ("mktemp -d", "$RUNNER_TEMP", "$GITHUB_RUN_ID", "$GITHUB_RUN_ATTEMPT", "$GITHUB_ENV", "attempt.json"):
+            self.assertIn(required, initialization)
         uploads = [step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@")]
         self.assertEqual(len(uploads), 1)
         self.assertEqual(uploads[0]["with"]["path"], "${{ env.EVIDENCE_ROOT }}")
@@ -252,11 +252,12 @@ class WorkflowTests(unittest.TestCase):
             old = root / "reports/benchmark/historical.json"
             old.parent.mkdir(parents=True)
             old.write_text('{"conclusion": "PASS"}')
-            evidence = root / "current-attempt"
-            env = {**os.environ, "EVIDENCE_ROOT": str(evidence), "SOURCE_REF": "invalid",
+            env_file = root / "github-env"
+            env = {**os.environ, "RUNNER_TEMP": str(root), "GITHUB_ENV": str(env_file), "SOURCE_REF": "invalid",
                    "PREDICTION_SOURCE": "mcp_reference_replay", "GITHUB_SHA": "a" * 40,
                    "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
             subprocess.run(["bash", "-e", "-c", steps[0]["run"]], cwd=root, env=env, check=True)
+            evidence = Path(env_file.read_text().strip().removeprefix("EVIDENCE_ROOT="))
             validation = subprocess.run(["bash", "-e", "-c", steps[1]["run"]], cwd=root, env=env, check=False)
             self.assertNotEqual(validation.returncode, 0)
             self.assertEqual([path.name for path in evidence.iterdir()], ["attempt.json"])
@@ -264,6 +265,40 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(attempt["run_attempt"], "2")
             self.assertEqual(attempt["prediction_source"], "mcp_reference_replay")
             self.assertNotIn("conclusion", attempt)
+
+    def test_pr_evidence_is_bounded_read_only_and_advisory(self) -> None:
+        workflows = pinned.ROOT.parents[1] / ".github/workflows"
+        workflow = yaml.safe_load((workflows / "swebench-pr.yml").read_text())
+        events = workflow.get("on", workflow.get(True))
+        self.assertEqual(set(events), {"pull_request"})
+        self.assertIn("benchmarks/swebench/**", events["pull_request"]["paths"])
+        self.assertEqual(workflow["permissions"], {"contents": "read"})
+        self.assertTrue(workflow["concurrency"]["cancel-in-progress"])
+        job = workflow["jobs"]["pinned-mcp-evidence"]
+        self.assertEqual(job["uses"], "./.github/workflows/swebench-lite.yml")
+        self.assertNotIn("secrets", job)
+        self.assertNotIn("environment", job)
+        self.assertEqual(job["with"], {
+            "source_ref": "${{ github.event.pull_request.head.sha }}",
+            "prediction_source": "mcp_reference_replay", "instance_ids": "sympy__sympy-12419",
+            "max_workers": "1", "install_swebench": True, "require_evaluation_pass": True,
+            "blocking": False, "timeout_minutes": 30,
+        })
+
+    def test_timeout_defaults_remain_unchanged_and_invalid_limits_fail_before_install(self) -> None:
+        workflow = yaml.safe_load((pinned.ROOT.parents[1] / ".github/workflows/swebench-lite.yml").read_text())
+        events = workflow.get("on", workflow.get(True))
+        for event in ("workflow_dispatch", "workflow_call"):
+            self.assertEqual(events[event]["inputs"]["timeout_minutes"]["default"], 180)
+        job = workflow["jobs"]["swebench-lite"]
+        self.assertEqual(job["timeout-minutes"], "${{ inputs.timeout_minutes || 180 }}")
+        validation = job["steps"][1]["run"]
+        for value, accepted in (("30", True), ("180", True), ("0", False), ("181", False), ("1.5", False)):
+            with self.subTest(value=value):
+                env = {**os.environ, "SOURCE_REF": "a" * 40, "PREDICTION_SOURCE": "mcp_reference_replay",
+                       "TIMEOUT_MINUTES": value}
+                result = subprocess.run(["bash", "-e", "-c", validation], env=env, capture_output=True, check=False)
+                self.assertEqual(result.returncode == 0, accepted)
 
 
 class ReplayTests(unittest.TestCase):

@@ -106,6 +106,14 @@ directory. Checked-in historical reports and unselected control stages are never
 included as current evidence. Missing reports mean that stage did not complete;
 they are not evidence of a pass.
 
+Pull requests changing the benchmark, its tests, or its workflows also run
+`swebench-pr`: one pinned SymPy MCP replay and the native/MCP official evaluations,
+with one worker and a 30-minute whole-job limit. It uses a read-only token, receives
+no secrets, and cancels superseded PR evidence runs. This advisory check is not a
+release dependency or a required branch-protection gate. Inspect its report
+payloads, not just the workflow conclusion. Existing manual and release callers
+retain the 180-minute default; `timeout_minutes` accepts integers from 1 to 180.
+
 Run offline regression coverage with:
 
 ```bash
