@@ -89,6 +89,9 @@ jobs:
   windows-msvc-smoke:
     runs-on: windows-latest
     timeout-minutes: 20
+    env:
+      # vcvars and existing smoke commands intentionally use cmd syntax.
+      CODING_TOOLS_MCP_WINDOWS_SHELL: cmd
     steps:
       - name: Check out repository
         uses: actions/checkout@v6.0.2
