@@ -107,14 +107,16 @@ class RuntimeIsolationTests(unittest.TestCase):
 
     def test_older_fd_retry_stays_on_the_unified_executor(self) -> None:
         import subprocess
-        responses = [subprocess.CompletedProcess(["fd"], 2, "", "unknown option --no-require-git"),
-                     subprocess.CompletedProcess(["fd"], 0, "source.txt\n", "")]
-        with patch("coding_tools_mcp.server.cached_which", return_value="fd"), \
-                patch.object(self.runtime.executor, "run", side_effect=responses) as run:
-            result = self.runtime.list_files({"patterns": ["**"], "include_ignored": True})
-        self.assertEqual(result["engine"], "fd")
-        self.assertEqual(run.call_count, 2)
-        self.assertNotIn("--no-require-git", run.call_args.args[0])
+        for parse_error_code in (1, 2):
+            with self.subTest(parse_error_code=parse_error_code):
+                responses = [subprocess.CompletedProcess(["fd"], parse_error_code, "", "unknown option --no-require-git"),
+                             subprocess.CompletedProcess(["fd"], 0, "source.txt\n", "")]
+                with patch("coding_tools_mcp.server.cached_which", return_value="fd"), \
+                        patch.object(self.runtime.executor, "run", side_effect=responses) as run:
+                    result = self.runtime.list_files({"patterns": ["**"], "include_ignored": True})
+                self.assertEqual(result["engine"], "fd")
+                self.assertEqual(run.call_count, 2)
+                self.assertNotIn("--no-require-git", run.call_args.args[0])
 
     def test_diagnostics_do_not_claim_unconfirmed_or_offline_capabilities(self) -> None:
         self.runtime.allow_network = True

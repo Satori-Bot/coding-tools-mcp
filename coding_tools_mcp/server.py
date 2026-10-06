@@ -37,6 +37,7 @@ from . import __version__
 from .envutils import ENV_PREFIX, truthy_env
 from .errors import JsonRpcError, ToolFailure
 from .policy import IsolationConfig, ExecutionPolicy, compile_policy, ISOLATION_MODES, NETWORK_MODES
+from .service_trust import ServiceImportSnapshot
 from .executor import WorkspaceExecutor
 from .file_broker import FileBroker
 from .shells import (
@@ -1572,6 +1573,11 @@ class Runtime:
     ) -> None:
         self.workspace = Workspace(workspace)
         self.isolation = isolation or IsolationConfig()
+        self._service_import_snapshot = ServiceImportSnapshot.capture() if self.isolation.mode == "strict" else None
+        if self._service_import_snapshot is not None:
+            # Structured tools can write the whole workspace even when commands
+            # are structured-only or a command policy denies a nested subtree.
+            self._service_import_snapshot.reject_overlapping_writes((self.workspace.root,))
         self.workspace_mutation = workspace_mutation or WorkspaceMutationPolicy()
         if self.workspace_mutation.mode not in WORKSPACE_MUTATION_CHOICES:
             raise ToolFailure(
@@ -1629,6 +1635,11 @@ class Runtime:
                 "command_manager belongs to a different workspace.",
                 category="validation",
             )
+        if self._service_import_snapshot is not None:
+            runtime_roots = (self.command_manager.runtime_dir,)
+            if self.command_manager.fallback_runtime_dir is not None:
+                runtime_roots += (self.command_manager.fallback_runtime_dir,)
+            self._service_import_snapshot.reject_overlapping_writes(runtime_roots)
         self._owns_command_manager = command_manager is None
         self.server_instance_id = self.command_manager.server_instance_id
         self._set_runtime_dir(self.command_manager.runtime_dir)
@@ -2965,9 +2976,10 @@ class Runtime:
                     stderr=subprocess.PIPE,
                     timeout=10,
                 )
-                if completed.returncode == 2 and "--no-require-git" in completed.stderr:
+                if completed.returncode in {1, 2} and "--no-require-git" in completed.stderr:
                     # Older fd (including Ubuntu 22.04's 8.3) lacks this
-                    # optional flag. Retry through the same policy boundary;
+                    # optional flag; clap 2 uses exit 1 and clap 3+ uses 2.
+                    # Retry through the same policy boundary;
                     # git check-ignore below still enforces repository ignores.
                     args_base.remove("--no-require-git")
                     args.remove("--no-require-git")

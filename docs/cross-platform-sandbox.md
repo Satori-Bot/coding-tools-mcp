@@ -87,7 +87,16 @@ Before enabling strict mode:
 
 1. Use a dedicated service account with no unrelated secrets. Keep the helper,
    authentication material, policy/control state, and logs outside writable
-   command roots.
+   command roots. Install the service and its Python dependencies outside the
+   served workspace and command runtime directories. Strict startup rejects
+   overlap in either direction with the service's import search trees, loaded
+   packages, or editable-install targets, including empty, relative, and missing
+   import paths. Do not serve the service checkout itself, run from the served
+   workspace when the current directory is on `sys.path`, or put it beneath a
+   broadly configured import root. This also applies to `structured-only` mode:
+   structured edits can otherwise change code later imported by the service.
+   Keep the service's working directory and Python import configuration fixed
+   while it is running; an editable install is allowed only in a disjoint tree.
 2. Install and pin the native helper from the same reviewed source version as
    the server. Do not discover it through workspace-controlled `PATH` entries.
 3. Identify the minimum toolchain read roots and command write roots. A

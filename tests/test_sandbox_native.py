@@ -139,7 +139,12 @@ class NativeSandboxTests(unittest.TestCase):
         self.base = Path(self.temp.name).resolve()
         self.workspace = self.base / "workspace"
         self.workspace.mkdir()
-        self.outside = self.base / "outside-secret"
+        # /tmp is intentionally replaced by a writable private tmpfs. Use a
+        # different host tree for strict outside-write denial; otherwise a
+        # successful write could merely create an unrelated private-temp file.
+        self.outside_temp = tempfile.TemporaryDirectory(prefix="ctmcp-native-private-", dir="/var/tmp")
+        self.addCleanup(self.outside_temp.cleanup)
+        self.outside = Path(self.outside_temp.name).resolve() / "outside-secret"
         self.outside.write_text("host-secret")
 
     def backend(self, *, readonly=False, deny=(), network="offline", allowed=()):
@@ -155,17 +160,36 @@ class NativeSandboxTests(unittest.TestCase):
     def test_workspace_write_allowed_outside_read_write_delete_denied(self):
         code = f"""
 from pathlib import Path
-from unittest.mock import patch
 Path('allowed').write_text('ok')
 secret = Path({str(self.outside)!r})
-for operation in [secret.read_text, lambda: secret.write_text('bad'), secret.unlink]:
+for name, operation in [('read', secret.read_text), ('write', lambda: secret.write_text('bad')), ('delete', secret.unlink)]:
     try: operation()
     except (PermissionError, FileNotFoundError): pass
-    else: raise AssertionError('outside operation succeeded')
+    else: raise AssertionError(name + ' unexpectedly succeeded at ' + str(secret))
 """
-        self.run_code(code)
+        try:
+            self.run_code(code)
+        finally:
+            self.assertEqual(self.outside.read_text(), "host-secret", "Host sentinel was modified")
         self.assertEqual((self.workspace / "allowed").read_text(), "ok")
-        self.assertEqual(self.outside.read_text(), "host-secret")
+
+    def test_private_tmp_shadows_host_tmp_without_reading_or_mutating_it(self):
+        host_tmp = self.base / "host-tmp-secret"
+        host_tmp.write_text("host tmp sentinel")
+        code = f"""
+from pathlib import Path
+private = Path({str(host_tmp)!r})
+assert not private.exists(), 'host tmp content was exposed'
+private.parent.mkdir(parents=True, exist_ok=True)
+private.write_text('private tmp content')
+assert private.read_text() == 'private tmp content'
+private.unlink()
+assert not private.exists()
+"""
+        try:
+            self.run_code(code)
+        finally:
+            self.assertEqual(host_tmp.read_text(), "host tmp sentinel", "Private tmp operation changed host tmp")
 
     def test_readonly_workspace_dynamic_deletion_denied(self):
         source = self.workspace / "source.py"
@@ -174,7 +198,7 @@ for operation in [secret.read_text, lambda: secret.write_text('bad'), secret.unl
         self.assertEqual(source.read_text(), "keep")
 
     def test_explicit_external_service_credentials_unreadable(self):
-        service = self.base / "service-control"
+        service = self.outside.parent / "service-control"
         service.mkdir()
         secret = service / "credential"
         secret.write_text("private")
@@ -430,9 +454,21 @@ class NativeRuntimeTests(unittest.TestCase):
         status = runtime.git_status({})
         self.assertTrue(status["is_repo"], status)
         self.assertIn("source.txt", [entry["path"] for entry in status["entries"]])
-        listing = runtime.list_files({"patterns": ["*.txt"]})
-        self.assertEqual(listing.get("engine"), "fd", listing)
-        self.assertIn("source.txt", [entry["path"] for entry in listing["files"]])
+        observed_fd = []
+        actual_run = runtime.executor.run
+        def observe_run(argv, *args, **kwargs):
+            completed = actual_run(argv, *args, **kwargs)
+            if Path(argv[0]).name in {"fd", "fdfind"}:
+                observed_fd.append({"argv": list(argv), "returncode": completed.returncode,
+                                    "stdout": completed.stdout, "stderr": completed.stderr})
+            return completed
+        # Instrument the real native executor only. No result is synthesized,
+        # and all fd launches retain the strict per-execution policy.
+        with patch.object(runtime.executor, "run", side_effect=observe_run):
+            listing = runtime.list_files({"patterns": ["*.txt"]})
+        fd_diagnostic = f"listing={listing!r}; actual fd executions={observed_fd!r}"
+        self.assertEqual(listing.get("engine"), "fd", fd_diagnostic)
+        self.assertIn("source.txt", [entry["path"] for entry in listing["files"]], fd_diagnostic)
         search = runtime.search_text({"query": "native needle"})
         self.assertEqual(search.get("engine"), "rg", search)
         self.assertEqual([match["path"] for match in search["matches"]], ["source.txt"])
