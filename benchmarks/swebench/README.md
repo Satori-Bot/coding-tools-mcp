@@ -86,7 +86,12 @@ A replay `PASS` means the tool-path checks passed. An official `PASS` additional
 requires working Docker, the pinned harness, verified images, successful harness
 processes, complete fresh per-instance reports, a nonzero native resolved count,
 and an MCP/control count at least as high. Missing Docker is `BLOCKED`; incomplete
-reports are `INCONCLUSIVE`. Unique run IDs prevent reuse of stale harness reports.
+reports are `INCONCLUSIVE`. Invalid inputs or unexpected execution errors produce
+current `ERROR` reports. A new attempt replaces prior summaries before preflight;
+an interrupted attempt remains `INCONCLUSIVE`. Unique run IDs and raw-log
+directories prevent reuse of stale harness reports.
+`--raw-dir` selects the parent of the unique attempt directory; the report's
+`raw_dir` field identifies the exact directory to inspect.
 
 The workflow's default `prediction_source=both` runs the reference control and
 actual MCP replay as separate evidence stages. `reference_patch`,
@@ -95,6 +100,11 @@ replay always targets its pinned SymPy instance; `instance_ids` selects the
 reference/checked-in smoke subset. `source_ref` must be an immutable 40-character
 commit SHA and the checked-out HEAD is verified. Release calls set
 `blocking=false`; failures remain visible in reports and do not gate publication.
+Each workflow attempt writes into its own runner-temporary evidence directory,
+records its source/run identifiers in `attempt.json`, and uploads only that
+directory. Checked-in historical reports and unselected control stages are never
+included as current evidence. Missing reports mean that stage did not complete;
+they are not evidence of a pass.
 
 Run offline regression coverage with:
 

@@ -38,7 +38,9 @@ workflow. This pipeline only publishes versions greater than `0.5.0`.
    introduced that version. Every gate, build and package uses that exact SHA,
    even if the push contains later commits. A push with no version change does
    nothing. Multiple version bumps in one push fail rather than skip a release.
-4. Both registries must contain verified package contents before the workflow
+4. Before either publisher starts, a read-only preflight checks both registries
+   against the built artifacts. An existing conflict in either registry blocks
+   all new publication. Both registries must contain verified package contents before the workflow
    creates the tag and GitHub Release. The tag is a completion receipt.
 
 Hard gates are metadata/version consistency, MCP contract/unit/security and
@@ -74,6 +76,13 @@ ignoring container timestamps/compression. Build tools are pinned in files from 
 npm pack CLI), and `SOURCE_DATE_EPOCH` comes from the release commit. This permits safe rebuilds
 without accepting different code under the same version. Publishing never uses
 an unconditional `skip-existing` to conceal conflicts.
+
+The shared preflight prevents avoidable partial releases, including a new Python
+version paired with a changed launcher that still uses npm `0.1.0`. Each publisher
+repeats verification under its own lock before uploading. The registries cannot
+be updated atomically: a later outage, upload failure, or publication outside this
+workflow can still leave a partial release. Recover it through the same immutable
+source and missing-file checks; never roll back by deleting published packages.
 
 Per-version publish/finalize concurrency groups never cancel an in-progress
 publication. npm has one publication lock across all launcher versions so latest-tag
@@ -123,6 +132,11 @@ an OIDC-capable pinned npm CLI, with provenance and no long-lived npm token.
 Official setup references: [PyPI trusted publishers](https://docs.pypi.org/trusted-publishers/adding-a-publisher/)
 and [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
 `final-audit` remains a manual audit of existing tags, outside the release path.
+It validates workflow names, successful run status, and matching commit SHAs;
+its generated report does not inspect benchmark artifacts. Individual outcomes
+and SWE-bench resolution counts therefore remain `UNKNOWN` in that report until
+the linked, current-run evidence is reviewed. Workflow success alone is never a
+substitute for successful official evaluation.
 The legacy local `scripts/publish-pypi.sh` helper is for deliberately manual
 publishing only; it does not coordinate npm, tags or GitHub Releases and is not
 the recovery path for this workflow. Prefer the main-based recovery above.

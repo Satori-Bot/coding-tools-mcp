@@ -101,7 +101,7 @@ class RequiredDocsTests(unittest.TestCase):
                 self.assertIn(needle, compliance)
 
         swebench = (ROOT / ".github/workflows/swebench-lite.yml").read_text(encoding="utf-8")
-        for needle in ("workflow_dispatch", "--install-swebench", "--run-evaluation", "reports/benchmark/**"):
+        for needle in ("workflow_dispatch", "--install-swebench", "--run-evaluation", "path: ${{ env.EVIDENCE_ROOT }}"):
             with self.subTest(workflow="swebench-lite", needle=needle):
                 self.assertIn(needle, swebench)
 

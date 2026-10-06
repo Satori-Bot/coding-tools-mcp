@@ -56,7 +56,10 @@ def select_release(root: Path, head: str, before: str = "", requested: str = "")
             raise ValueError("automatic release requires a non-initial main push")
         if before not in history:
             raise ValueError("before is not a first-parent ancestor; force pushes are not release inputs")
+        pushed_versions = {at(sha) for sha in history[:history.index(before)]}
         if at(before) == current_version:
+            if pushed_versions - {current_version}:
+                raise ValueError("multiple version changes in one push; recover each version explicitly")
             return {"publish": "false"}
         version = current_version
         if stable_version(version) <= SEALED_VERSION:
@@ -64,8 +67,7 @@ def select_release(root: Path, head: str, before: str = "", requested: str = "")
         if stable_version(at(before)) >= stable_version(version):
             raise ValueError("release version must increase")
         # Do not silently drop an intermediate version from a batched push.
-        changed_versions = {at(sha) for sha in history[:history.index(before)]}
-        changed_versions.discard(at(before))
+        changed_versions = pushed_versions - {at(before)}
         if changed_versions != {version}:
             raise ValueError("multiple version changes in one push; recover each version explicitly")
 

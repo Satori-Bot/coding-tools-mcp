@@ -4,10 +4,13 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import yaml
 
 os.environ.setdefault("CODING_TOOLS_MCP_TELEMETRY", "off")
 
@@ -166,9 +169,48 @@ class HarnessTests(unittest.TestCase):
             first = json.loads((root / "report.json").read_text())
             self.assertEqual(first["conclusion"], "BLOCKED")
             self.assertFalse(first["candidate"]["run"]["ran"])
+            old_raw = Path(first["raw_dir"])
+            old_raw.mkdir(parents=True)
+            (old_raw / "historical-success.json").write_text('{"resolved": true}')
             self.assertEqual(run_smoke.main(args), 1)
             second = json.loads((root / "report.json").read_text())
             self.assertNotEqual(first["run_ids"], second["run_ids"])
+            self.assertNotEqual(first["raw_dir"], second["raw_dir"])
+            self.assertTrue((old_raw / "historical-success.json").exists())
+            self.assertFalse((Path(second["raw_dir"]) / "historical-success.json").exists())
+
+    def test_early_failure_replaces_stale_pass_reports(self) -> None:
+        for failure in ("instance", "pins", "workers"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                report, markdown = root / "report.json", root / "report.md"
+                report.write_text('{"conclusion": "PASS", "baseline": {"resolved": 1}}')
+                markdown.write_text("# Historical result\nPASS\n")
+                args = ["--report-json", str(report), "--report-md", str(markdown)]
+                if failure == "instance":
+                    args.extend(["--instance-id", "unknown-typo"])
+                elif failure == "workers":
+                    args.extend(["--max-workers", "0"])
+                with contextlib.ExitStack() as stack:
+                    if failure == "pins":
+                        stack.enter_context(patch.object(run_smoke, "load_pins", side_effect=ValueError("broken pin")))
+                    stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+                    self.assertEqual(run_smoke.main(args), 1)
+                current = json.loads(report.read_text())
+                self.assertEqual(current["conclusion"], "ERROR")
+                self.assertNotIn("resolved", current["baseline"])
+                self.assertNotIn("PASS", markdown.read_text())
+                self.assertIn("failed:", " ".join(current["limitations"]))
+
+    def test_interruption_cannot_leave_a_prior_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report, markdown = root / "report.json", root / "report.md"
+            report.write_text('{"conclusion": "PASS"}')
+            with patch.object(run_smoke, "load_pins", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+                run_smoke.main(["--report-json", str(report), "--report-md", str(markdown)])
+            self.assertEqual(json.loads(report.read_text())["conclusion"], "INCONCLUSIVE")
+            self.assertNotIn("PASS", markdown.read_text())
 
 
 class WorkflowTests(unittest.TestCase):
@@ -182,6 +224,46 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("source=reference_patch", text)
         self.assertNotIn('ids="${{', text)
         self.assertNotIn('--max-workers "${{', text)
+
+    def test_only_current_attempt_evidence_is_uploaded(self) -> None:
+        workflow = yaml.safe_load((pinned.ROOT.parents[1] / ".github/workflows/swebench-lite.yml").read_text())
+        job = workflow["jobs"]["swebench-lite"]
+        self.assertIn("runner.temp", job["env"]["EVIDENCE_ROOT"])
+        self.assertIn("github.run_id", job["env"]["EVIDENCE_ROOT"])
+        self.assertIn("github.run_attempt", job["env"]["EVIDENCE_ROOT"])
+        self.assertIn("attempt.json", job["steps"][0]["run"])
+        uploads = [step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@")]
+        self.assertEqual(len(uploads), 1)
+        self.assertEqual(uploads[0]["with"]["path"], "${{ env.EVIDENCE_ROOT }}")
+        for step in job["steps"]:
+            run = step.get("run", "")
+            self.assertNotIn("reports/benchmark", run)
+            if "replay_mcp.py" in run:
+                self.assertIn('--output-dir "$EVIDENCE_ROOT/mcp-replay"', run)
+            if "run_smoke.py" in run:
+                self.assertIn('--report-json "$EVIDENCE_ROOT/', run)
+                self.assertIn('--report-md "$EVIDENCE_ROOT/', run)
+
+    def test_failed_workflow_validation_leaves_only_current_attempt_manifest(self) -> None:
+        workflow = yaml.safe_load((pinned.ROOT.parents[1] / ".github/workflows/swebench-lite.yml").read_text())
+        steps = workflow["jobs"]["swebench-lite"]["steps"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "reports/benchmark/historical.json"
+            old.parent.mkdir(parents=True)
+            old.write_text('{"conclusion": "PASS"}')
+            evidence = root / "current-attempt"
+            env = {**os.environ, "EVIDENCE_ROOT": str(evidence), "SOURCE_REF": "invalid",
+                   "PREDICTION_SOURCE": "mcp_reference_replay", "GITHUB_SHA": "a" * 40,
+                   "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
+            subprocess.run(["bash", "-e", "-c", steps[0]["run"]], cwd=root, env=env, check=True)
+            validation = subprocess.run(["bash", "-e", "-c", steps[1]["run"]], cwd=root, env=env, check=False)
+            self.assertNotEqual(validation.returncode, 0)
+            self.assertEqual([path.name for path in evidence.iterdir()], ["attempt.json"])
+            attempt = json.loads((evidence / "attempt.json").read_text())
+            self.assertEqual(attempt["run_attempt"], "2")
+            self.assertEqual(attempt["prediction_source"], "mcp_reference_replay")
+            self.assertNotIn("conclusion", attempt)
 
 
 class ReplayTests(unittest.TestCase):

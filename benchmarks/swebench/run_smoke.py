@@ -379,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--report-json", type=Path, default=Path("reports/benchmark/swebench-regression.json"))
     parser.add_argument("--report-md", type=Path, default=Path("reports/benchmark/swebench-regression.md"))
-    parser.add_argument("--raw-dir", type=Path)
+    parser.add_argument("--raw-dir", type=Path, help="Parent directory for this attempt's unique raw-log subdirectory")
     parser.add_argument("--max-workers", type=int, default=2)
     parser.add_argument("--instance-id", action="append", default=[])
     parser.add_argument("--prediction-source", choices=("reference_patch", "mcp_reference_replay", "checked_in"), default="checked_in")
@@ -393,14 +393,36 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    raw_dir = args.raw_dir
-    if raw_dir is None:
-        raw_dir = args.report_json.parent / args.report_json.stem / "raw"
+    raw_parent = args.raw_dir or args.report_json.parent / args.report_json.stem / "raw"
+    # Preserve previous diagnostics, but never mix them into this run's evidence.
+    args.raw_dir = raw_parent / uuid.uuid4().hex
+    # Replace any old PASS before pin/subset reads or other fallible preflight.
+    # An interrupted run must also leave a current, explicitly incomplete report.
+    incomplete: dict[str, Any] = {
+        "conclusion": "INCONCLUSIVE", "prediction_source": args.prediction_source,
+        "advisory_only": True, "dataset_name": "not validated", "split": "not validated",
+        "subset_path": str(args.subset), "raw_dir": str(args.raw_dir), "instances": [],
+        "preflight": [], "limitations": ["This attempt has not completed preflight or evaluation."],
+        "baseline": {"path": str(args.baseline_predictions), "command": []},
+        "candidate": {"path": str(args.candidate_predictions), "command": []},
+    }
+    write_reports(incomplete, args.report_json, args.report_md)
+    try:
+        return run_attempt(args)
+    except Exception as exc:
+        incomplete["conclusion"] = "ERROR"
+        incomplete["limitations"] = [f"Preflight or evaluation failed: {type(exc).__name__}: {exc}"]
+        write_reports(incomplete, args.report_json, args.report_md)
+        print(incomplete["limitations"][0], file=sys.stderr)
+        return 1
 
+
+def run_attempt(args: argparse.Namespace) -> int:
+    raw_dir = args.raw_dir
     pins = load_pins()
     dataset_path(pins)  # Fail closed on fixture corruption even for preflight.
     if args.max_workers < 1:
-        parser.error("--max-workers must be positive")
+        raise ValueError("--max-workers must be positive")
     subset = load_subset(args.subset)
     instances = selected_instances(subset, args.instance_id)
     expected_ids = {str(item["instance_id"]) for item in instances}

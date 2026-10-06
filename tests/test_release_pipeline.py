@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tarfile
@@ -16,7 +17,7 @@ import zipfile
 import yaml
 
 from scripts.finalize_release import inspect, main as finalize_main, notes, require_workflow_token_compatibility
-from scripts.release_artifacts import archive_contents, download, registry_state, verify_payload, npm_publish_tag
+from scripts.release_artifacts import archive_contents, download, main as artifacts_main, registry_state, verify_payload, npm_publish_tag
 from scripts.release_plan import select_release
 
 
@@ -76,6 +77,12 @@ class ReleaseSelectionTests(unittest.TestCase):
         self.commit("0.5.1")
         head = self.commit("0.6.0")
         with self.assertRaisesRegex(ValueError, "multiple"):
+            select_release(self.root, head, self.initial)
+
+    def test_batched_bump_then_revert_is_not_a_non_version_push(self) -> None:
+        self.commit("0.5.1")
+        head = self.commit("0.5.0", "revert version")
+        with self.assertRaisesRegex(ValueError, "multiple version changes"):
             select_release(self.root, head, self.initial)
 
     def test_reintroduced_version_is_ambiguous(self) -> None:
@@ -192,6 +199,43 @@ class ArtifactVerificationTests(unittest.TestCase):
         with patch("scripts.release_artifacts.download", side_effect=[metadata, wheel()]):
             with self.assertRaisesRegex(ValueError, "conflict"):
                 registry_state("pypi", self.root, "0.5.1")
+
+    def test_partial_recovery_stages_only_missing_files(self) -> None:
+        stage = self.root / "pending"
+        report = self.root / "receipt.json"
+        output = self.root / "github-output"
+        argv = ["release_artifacts", "pypi", "--directory", str(self.root), "--version", "0.5.1",
+                "--stage", str(stage), "--report", str(report)]
+        with patch("sys.argv", argv), patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), patch(
+            "scripts.release_artifacts.download", side_effect=[self.pypi_metadata([self.wheel]), self.wheel.read_bytes()],
+        ):
+            self.assertEqual(artifacts_main(), 0)
+        self.assertEqual([path.name for path in stage.iterdir()], [self.sdist.name])
+        self.assertEqual((stage / self.sdist.name).read_bytes(), self.sdist.read_bytes())
+        self.assertEqual(json.loads(report.read_text())["state"], "partial")
+        self.assertEqual(output.read_text(), "missing=1\nstate=partial\n")
+
+    def test_conflict_never_stages_other_missing_files_or_writes_outputs(self) -> None:
+        metadata = self.pypi_metadata([self.wheel])
+        self.wheel.write_bytes(wheel(b"changed after first publish"))
+        stage = self.root / "pending"
+        output = self.root / "github-output"
+        argv = ["release_artifacts", "pypi", "--directory", str(self.root), "--version", "0.5.1", "--stage", str(stage)]
+        with patch("sys.argv", argv), patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), patch(
+            "scripts.release_artifacts.download", side_effect=[metadata, wheel()],
+        ), self.assertRaisesRegex(ValueError, "conflict"):
+            artifacts_main()
+        self.assertFalse(stage.exists())
+        self.assertFalse(output.exists())
+
+    def test_registry_preflight_is_read_only_and_accepts_missing_files(self) -> None:
+        argv = ["release_artifacts", "pypi", "--directory", str(self.root), "--version", "0.5.1"]
+        before = {path.name: path.read_bytes() for path in self.root.iterdir()}
+        with patch("sys.argv", argv), patch.dict(os.environ, {"GITHUB_OUTPUT": ""}), patch(
+            "scripts.release_artifacts.download", return_value=None,
+        ):
+            self.assertEqual(artifacts_main(), 0)
+        self.assertEqual({path.name: path.read_bytes() for path in self.root.iterdir()}, before)
 
     def test_npm_existing_version_must_match_payload(self) -> None:
         path = self.root / "coding-tools-mcp-0.1.0.tgz"
@@ -323,6 +367,23 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def test_finalization_requires_both_verified_registries(self) -> None:
         self.assertEqual(set(self.jobs["github-release"]["needs"]), {"plan", "publish-pypi", "publish-npm"})
         self.assertEqual(set(self.jobs["build"]["needs"]), {"plan", "compliance", "real-workloads"})
+
+    def test_both_registries_are_preflighted_before_either_publisher_can_start(self) -> None:
+        steps = self.jobs["build"]["steps"]
+        preflight = next(step for step in steps if step.get("id") == "registry-preflight")
+        self.assertNotIn("if", preflight)
+        self.assertNotIn("continue-on-error", preflight)
+        self.assertIn('scripts.release_artifacts pypi --directory source/dist --version "$VERSION"', preflight["run"])
+        self.assertIn('scripts.release_artifacts npm --directory source/packages/npm-launcher --version "$NPM_VERSION"', preflight["run"])
+        self.assertEqual(preflight["env"], {"VERSION": "${{ needs.plan.outputs.version }}", "NPM_VERSION": "${{ needs.plan.outputs.npm_version }}"})
+        uploads = [i for i, step in enumerate(steps) if step.get("uses", "").startswith("actions/upload-artifact@")]
+        self.assertTrue(uploads)
+        self.assertLess(steps.index(preflight), min(uploads))
+        for publisher in ("publish-pypi", "publish-npm"):
+            self.assertIn("build", self.jobs[publisher]["needs"])
+            self.assertNotIn("if", self.jobs[publisher])
+            registry = next(step for step in self.jobs[publisher]["steps"] if step.get("id") == "registry")
+            self.assertIn("scripts.release_artifacts", registry["run"])
 
     def test_external_benchmark_is_not_a_transitive_release_gate(self) -> None:
         for name, job in self.jobs.items():

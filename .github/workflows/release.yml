@@ -135,6 +135,16 @@ jobs:
           make check-npm-launcher
           cd packages/npm-launcher
           npm pack
+      - name: Preflight BOTH registries before either publication
+        id: registry-preflight
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          NPM_VERSION: ${{ needs.plan.outputs.npm_version }}
+        run: |
+          python -m scripts.release_artifacts pypi --directory source/dist --version "$VERSION"
+          python -m scripts.release_artifacts npm --directory source/packages/npm-launcher --version "$NPM_VERSION"
+        # Read-only: detect known conflicts before either package can be uploaded.
+        # Publishers still revalidate under their locks; this is not a transaction.
       - name: Upload Python distributions
         uses: actions/upload-artifact@v7.0.1
         with:
