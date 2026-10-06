@@ -11,6 +11,15 @@ configuration semantics, including the documented limitations of optional
 Landlock enforcement. Enabling strict execution is an explicit deployment
 choice, separate from `--permission-mode` and `--workspace-mutation`.
 
+Compatibility Git helpers retain Git's default system configuration and honor
+`GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`, and `GIT_CONFIG_NOSYSTEM` when selected
+by the server's shell-environment policy. This preserves administrator-provided
+`safe.directory` trust, includes, and global overrides without adding new trust
+entries. Missing trust or invalid/unreadable configuration still produces Git's
+failure. Executable helper mechanisms (hooks, fsmonitor, external diff, textconv,
+and search preprocessors) remain disabled. Strict helpers continue to ignore
+system and global Git configuration.
+
 ### Configuration
 
 | CLI option | Environment equivalent | Meaning |
@@ -252,6 +261,15 @@ Job Objects alone do not provide filesystem isolation.
 The `exec_command` result's `shell` diagnostic includes `kind`, `executable`, `fallback`,
 `fallback_reason`, and `warning`. Use the syntax of the actual selected shell;
 the server does not translate a PowerShell program into cmd syntax.
+
+`exit_code` is the selected shell process's status. PowerShell 7 uses
+[`pwsh -Command` semantics](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pwsh#-command---c):
+a final native program returning a nonzero status such as 7 normally makes the
+shell return 1. To return that program's exact status, explicitly end the command
+with `exit $LASTEXITCODE`. A subsequent successful PowerShell command can make
+the shell return 0 even if an earlier native program failed. The server leaves
+the command unchanged; it does not append an exit statement. The native Windows
+suite verifies these cases through both the shell and `Runtime.exec_command`.
 
 Windows PowerShell 5.1 is not PowerShell 7. Explicit PowerShell configuration
 must be validated before any version probe; a bad explicit path is an error,

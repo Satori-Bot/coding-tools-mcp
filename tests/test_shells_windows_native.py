@@ -45,6 +45,29 @@ class NativeWindowsShellTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn((self.selected.kind + "-native-ok").encode(), result.stdout)
 
+    def test_runtime_reports_selected_shell_exit_status(self) -> None:
+        from coding_tools_mcp.server import Runtime
+
+        script = self.workspace / "native status.py"
+        script.write_text("raise SystemExit(7)\n", encoding="utf-8")
+        if self.selected.kind == "pwsh":
+            native = "& " + " ".join("'" + str(value).replace("'", "''") + "'"
+                                      for value in (sys.executable, script))
+            cases = ((native, 1), (native + "; exit $LASTEXITCODE", 7),
+                     (native + "; Write-Output 'continued'", 0), ("throw 'fixture failure'", 1), ("exit 7", 7))
+        else:
+            native = " ".join('"' + str(value) + '"' for value in (sys.executable, script))
+            cases = ((native, 7), ("exit /b 7", 7))
+        runtime = Runtime(self.workspace, permission_mode="dangerous")
+        self.addCleanup(runtime.close)
+        for command, expected in cases:
+            with self.subTest(command=command):
+                direct = self.run_command(command)
+                self.assertEqual(direct.returncode, expected, direct.stderr)
+                result = runtime.exec_command({"cmd": command, "timeout_ms": 30_000, "yield_time_ms": 10_000})
+                self.assertEqual(result["status"], "exited", result)
+                self.assertEqual(result["exit_code"], expected, result)
+
     def test_quoted_executable_arguments_and_chinese_working_directory(self) -> None:
         script = self.workspace / "参数 program.py"
         script.write_text("import os, sys\nassert sys.argv[1:] == ['two words', '中文', 'literal & character']\nprint('quoted-native-ok')\n", encoding="utf-8")

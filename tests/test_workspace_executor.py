@@ -48,6 +48,46 @@ class WorkspaceExecutorTests(unittest.TestCase):
             self.assertNotIn(name, env)
         self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
 
+    def test_compatibility_helper_keeps_default_system_config_enabled(self) -> None:
+        env = filtered_environment({"PATH": os.defpath}, helper=True, strict=False)
+        self.assertNotIn("GIT_CONFIG_NOSYSTEM", env)
+        self.assertNotIn("GIT_CONFIG_SYSTEM", env)
+        self.assertNotIn("GIT_CONFIG_GLOBAL", env)
+
+    def test_protected_git_config_selection_is_compatibility_only(self) -> None:
+        for nosystem in ("0", "false", "1", "true"):
+            source = {"GIT_CONFIG_SYSTEM": "system-config", "GIT_CONFIG_GLOBAL": "global-config",
+                      "GIT_CONFIG_NOSYSTEM": nosystem, "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+                      "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.fsmonitor",
+                      "GIT_CONFIG_VALUE_0": "ignored", "GIT_CONFIG_PARAMETERS": "ignored"}
+            with self.subTest(nosystem=nosystem):
+                compatible = filtered_environment(source, helper=True, strict=False)
+                for key in ("GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"):
+                    self.assertEqual(compatible[key], source[key])
+                strict = filtered_environment(source, helper=True, strict=True)
+                self.assertEqual(strict["GIT_CONFIG_NOSYSTEM"], "1")
+                self.assertEqual(strict["GIT_CONFIG_GLOBAL"], os.devnull)
+                self.assertNotIn("GIT_CONFIG_SYSTEM", strict)
+                self.assertNotIn("GIT_TEST_ASSUME_DIFFERENT_OWNER", strict)
+                for env in (compatible, strict):
+                    for key in ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_PARAMETERS"):
+                        self.assertNotIn(key, env)
+
+    def test_compatibility_git_config_does_not_remove_helper_hardening(self) -> None:
+        executor = self.executor()
+        env = {"GIT_CONFIG_SYSTEM": "system-config", "GIT_CONFIG_GLOBAL": "global-config"}
+        null_path = "NUL" if os.name == "nt" else os.devnull
+        for operation in ("diff", "show", "log", "blame"):
+            with self.subTest(operation=operation):
+                command, clean_env, _ = executor._prepare(["git", operation], "read-helper", env)
+                self.assertEqual(clean_env["GIT_CONFIG_SYSTEM"], env["GIT_CONFIG_SYSTEM"])
+                for setting in ("core.fsmonitor=false", f"core.hooksPath={null_path}",
+                                "diff.external=", "credential.helper=", "protocol.allow=never"):
+                    self.assertIn(setting, command)
+                self.assertIn("--no-textconv", command)
+                if operation != "blame":
+                    self.assertIn("--no-ext-diff", command)
+
     def test_startup_git_uses_executor(self) -> None:
         executor = self.executor()
         with patch.object(executor, "run", wraps=executor.run) as run:

@@ -41,13 +41,20 @@ _DANGEROUS_ENV = frozenset({
     "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_EXEC_PATH",
     "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_EXTERNAL_DIFF",
 })
+_COMPATIBILITY_GIT_ENV = frozenset({
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
+    "GIT_TEST_ASSUME_DIFFERENT_OWNER",
+})
 
 
 def filtered_environment(env: dict[str, str], *, helper: bool, strict: bool) -> dict[str, str]:
     result: dict[str, str] = {}
     for key, value in env.items():
         upper = key.upper()
-        compatibility_git = helper and not strict and upper in {"GIT_CONFIG_GLOBAL", "GIT_TEST_ASSUME_DIFFERENT_OWNER"}
+        # Preserve the operator's protected-config selection in compatibility
+        # mode, including system safe.directory entries and explicit opt-outs.
+        # Git's executable mechanisms are still disabled by _prepare below.
+        compatibility_git = helper and not strict and upper in _COMPATIBILITY_GIT_ENV
         if (helper or strict) and not compatibility_git and (
             _ENV_REJECT.search(upper) or upper in _DANGEROUS_ENV
             or upper.startswith(("LD_", "DYLD_", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
@@ -60,11 +67,11 @@ def filtered_environment(env: dict[str, str], *, helper: bool, strict: bool) -> 
         result[canonical] = value
     if helper:
         result.update({
-            "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0",
             "GIT_PAGER": "cat", "PAGER": "cat",
         })
         if strict:
+            result["GIT_CONFIG_NOSYSTEM"] = "1"
             result["GIT_CONFIG_GLOBAL"] = os.devnull
     return result
 
