@@ -53,7 +53,7 @@ sandbox. Successful strict `exec_command` results include
 
 | Platform | Strict execution in this implementation | Required evidence |
 | --- | --- | --- |
-| Linux x86-64 / AArch64 | Offline and controlled-CONNECT-proxy backends use bubblewrap and the pinned Rust helper; host prerequisites are mandatory. | Native kernel-boundary and proxy suites on the integration commit; acceptance remains pending until those run successfully. |
+| Linux x86-64 / AArch64 | Offline and controlled-CONNECT-proxy backends use bubblewrap and the pinned Rust helper; host prerequisites are mandatory. | Both architectures have native CI gates; require success on the intended deployment commit and verify the actual host prerequisites. |
 | macOS | Unavailable; strict command launch is rejected. Seatbelt profiles alone do not guarantee cleanup of hostile descendants that detach from a process group. | Native rejection, experimental Seatbelt file/network policy, and structured-broker tests; these do not establish a supported full-strict backend. |
 | Windows | Unavailable; strict execution and strict structured access are rejected. Native shell compatibility is separate. | Native cmd and PowerShell 7 compatibility suites and explicit strict rejection. |
 
@@ -271,6 +271,56 @@ are appropriately restricted. It is not native MSVC compatibility. Restricted
 tokens, ACLs, or experimental MXC/PSEC/AppContainer work must be evaluated
 against the complete read/write/network contract before being called strict.
 
+### What would enable native Windows strict support?
+
+The current rejection is an implementation and validation limit, not a claim
+that Windows cannot provide isolation. The source comparison used the fixed
+Codex revision below and its pinned
+[Microsoft MXC revision](https://github.com/microsoft/mxc/tree/6cd3d58f05d3447e67109cfb75e042803b843ca4).
+Neither reference is an automatic security approval for this package.
+
+* **PSEC availability and maturity:** inspect the actual exports and successfully
+  create/close an ephemeral Process Security Environment before considering the
+  backend usable. Windows build numbers or AppContainer fallback availability
+  are insufficient; deny carveouts additionally need `PSE_SUPPORT_FS_DENY`.
+  The pinned [OS capability matrix](https://github.com/microsoft/mxc/blob/6cd3d58f05d3447e67109cfb75e042803b843ca4/docs/process-container/os-version-support.md)
+  distinguishes these features. Its [README warning](https://github.com/microsoft/mxc/blob/6cd3d58f05d3447e67109cfb75e042803b843ca4/README.md)
+  says the preview profiles must not yet be treated as security boundaries.
+  Export detection alone would not override that warning or establish isolation.
+* **Proxy policy:** Codex's pinned MXC adapter grants broad host loopback because
+  it does not integrate proxy-peer identity. This is an
+  [adapter limitation](https://github.com/openai/codex/blob/822e58cc3d666166c7446c5b1ea2e52f5d09594c/codex-rs/mxc-sandbox/README.md),
+  not an inherent PSEC limitation. MXC documents an identity-scoped proxy with
+  host loopback denied, but the pinned model requires a pre-existing proxy
+  AppContainer/package identity, appropriate firewall authorization, and
+  private-network server/ingress permission. Those are not equivalent to this
+  project's complete proxy-only contract. See the
+  [pinned networking prerequisites](https://github.com/microsoft/mxc/blob/6cd3d58f05d3447e67109cfb75e042803b843ca4/docs/process-container/networking.md).
+* **AppContainer/LPAC:** these are useful primitives, not directly a list-of-paths
+  policy API. Exact grants need a reviewed resource-ACL or broker design, with
+  compatible runtime/registry/COM permissions and controlled ambient grants.
+  [AppContainer profile creation](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile)
+  persists filesystem and registry state; it is not a harmless availability
+  probe. This package does not create such profiles or install host ACL/firewall
+  exceptions automatically.
+
+A bounded next validation is an explicitly provisioned, disposable Windows
+test host: record OS/API readiness, then test **offline PSEC only** without
+fallback or permissive learning mode. Require actual allowed and denied access,
+PowerShell/Python startup, initialized MSVC builds, and complete workload
+teardown. A later proxy experiment needs its own reviewed identity, firewall,
+inbound-policy, and revocation design. There is no such backend or native
+enforcement evidence in this release.
+
+For the VM deployment alternative, remember that host isolation does not itself
+separate secrets inside the guest. Keep service control state away from workload
+grants. A Hyper-V private switch excludes the host; an internal switch includes
+it. Enforce proxy-only egress outside the workload VM rather than trusting its
+environment variables. See Microsoft's
+[virtual switch guidance](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/plan/plan-hyper-v-networking-in-windows-server).
+VM provisioning, shared-folder choices and network configuration remain
+operator-owned and are not performed by this package.
+
 ## Native acceptance and evidence
 
 The [native workflow](../.github/workflows/cross-platform-sandbox.yml) runs on
@@ -294,6 +344,27 @@ root exit, kill, and timeout after assignment to a kill-on-close Job before the
 root begins execution. Independently brokered launches through WMI or scheduled
 tasks are outside that lifecycle claim. This gate does not turn Windows
 compatibility into strict filesystem or network isolation.
+The rejection test records the Windows build and the availability of three PSEC
+exports in the System32 `processmodel.dll`. It does not call the exports or
+create security environments, profiles, ACLs, or firewall rules. This is
+readiness metadata only, not an enforcement test or support decision.
+
+The Linux matrix runs the same required native suite on x86-64 and AArch64,
+asserting the actual runner architecture. A cross-compiled helper or unit test
+of syscall numbers alone is not AArch64 enforcement evidence. The macOS gate
+also records finite POSIX process-group/session probes separately from its
+filesystem/network tests; successful profile installation does not establish
+strict lifetime containment.
+
+Recorded native checkpoint:
+[commit `c7a6848`](https://github.com/xyTom/coding-tools-mcp/actions/runs/37431960081)
+passed all five platform jobs. Linux AArch64 ran the namespace/helper suite
+(30 executed, three other-platform skips), all 30 proxy tests, and all 24 broker
+tests. The macOS 14.8.9 ARM64 fixture observed all four group/session transitions
+under the current profile; adding only the two syscall restrictions blocked
+`setsid`, `setpgid`, and `daemon`, but not `posix_spawn`'s group attribute. This
+records that specific commit and OS, not acceptance of a future head or macOS
+strict support. Check the target commit's current runs before deployment.
 
 Acceptance must cover the following with real programs and disposable
 fixtures:
@@ -320,6 +391,21 @@ fixtures:
 A skipped capability test is unavailable evidence, not successful isolation.
 Keep existing protocol, command-ID/output, timeout, encoding, and mutation
 regressions alongside these tests.
+
+### Remaining design scope
+
+| Original plan item | Delivery and remaining requirement |
+| --- | --- |
+| Unified policy, workspace subprocesses and structured IO | Implemented, with routing, protocol, compatibility and native integration gates. |
+| Linux offline and controlled proxy | Implemented; deployment still requires the advertised native host prerequisites and acceptance on that host. |
+| macOS first-class strict backend | **Not delivered.** File/network profile and structured IO are exercised, but a compatible lifetime supervisor and complete native proof are missing. Strict commands remain rejected. |
+| Windows compatibility | Native cmd, PowerShell 7, Job lifecycle, encoding and MSVC gates. The hosted cmd group is not a machine with PowerShell physically uninstalled. |
+| Windows native strict investigation | Source/prerequisite assessment only; no PSEC/AppContainer policy backend or enforcement claim. |
+| Nested protected paths in command grants | Rejected rather than approximated with unsafe pathname masking. The structured broker supports its separately documented denial model. |
+| Identity-bound real permission grants (#79) | Deferred as the plan allows; static operator policy is not a grant system. |
+
+Green CI validates the implemented scope; it does not complete the unsupported
+rows or authorize closing issues that require those capabilities.
 
 ## Integration history and closure criteria
 

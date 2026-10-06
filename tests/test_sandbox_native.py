@@ -701,6 +701,25 @@ print('profile file/network checks passed; strict lifecycle not supported')
 class NativePlatformRejectionTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform in {"darwin", "win32"}, "Unsupported native strict platforms")
     def test_actual_platform_strict_rejected_without_side_effect(self):
+        if sys.platform == "win32":
+            import ctypes
+            import platform
+            # Readiness metadata only. Load the OS library from System32;
+            # never call these APIs or create profiles/security environments.
+            metadata: dict[str, object] = {
+                "os_build": list(sys.getwindowsversion().platform_version),
+                "product_type": sys.getwindowsversion().product_type,
+                "architecture": platform.machine(), "process_bits": ctypes.sizeof(ctypes.c_void_p) * 8,
+                "runner_image_version": os.environ.get("ImageVersion"),
+            }
+            names = ("CreateProcessSecurityEnvironment", "QueryProcessSecurityEnvironmentSupport", "CloseProcessSecurityEnvironment")
+            try:
+                processmodel = ctypes.WinDLL("processmodel.dll", winmode=0x00000800)
+            except OSError as error:
+                metadata["load_error"] = error.winerror
+            else:
+                metadata["exports"] = {name: hasattr(processmodel, name) for name in names}
+            print("WINDOWS_PSEC_READINESS_ONLY=" + json.dumps(metadata, sort_keys=True), flush=True)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             marker = root / "side-effect"
