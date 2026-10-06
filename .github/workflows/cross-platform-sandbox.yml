@@ -28,10 +28,17 @@ jobs:
             os: ubuntu-22.04
             scope: native isolation
             helper_root: /var/lib/coding-tools-mcp
+            architecture: x86_64
+          - platform: Linux-ARM64
+            os: ubuntu-22.04-arm
+            scope: native isolation
+            helper_root: /var/lib/coding-tools-mcp
+            architecture: aarch64
           - platform: macOS
             os: macos-14
             helper_root: /private/var/lib/coding-tools-mcp
             scope: native capability rejection
+            architecture: arm64
     env:
       # Linux must enforce its advertised native capabilities. On macOS the
       # gate must exercise explicit strict-mode rejection, not claim support.
@@ -44,6 +51,10 @@ jobs:
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: '3.11'
+      - name: Record and require the native runner architecture
+        env:
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+        run: python -c 'import os, platform; actual = platform.machine(); print(platform.platform(), actual); assert actual == os.environ["EXPECTED_ARCHITECTURE"], actual'
       - name: Build pinned Linux backend
         if: runner.os == 'Linux'
         shell: bash

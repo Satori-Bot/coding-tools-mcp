@@ -521,46 +521,72 @@ class NativeSeatbeltProfileTests(unittest.TestCase):
                 "(allow syscall-unix)",
                 "(deny syscall-unix (syscall-number 82 147))",
             ))
-            interpreter = str(Path(sys.executable).resolve())
+            # A tiny native fixture avoids granting unrelated Python/ctypes
+            # initialization sysctls just to test POSIX process attributes.
+            source = workspace / "lifetime.c"
+            executable = workspace / "lifetime"
+            source.write_text(r"""
+#define _DARWIN_C_SOURCE
+#include <errno.h>
+#include <spawn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern char **environ;
+static int wait_child(pid_t child) {
+    int status;
+    if (child < 0 || waitpid(child, &status, 0) != child) return 2;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 3;
+}
+int main(int argc, char **argv) {
+    if (argc < 2) return 2;
+    const char *operation = argv[1];
+    pid_t original_group = getpgrp();
+    if (strcmp(operation, "spawn_child") == 0) {
+        if (argc != 3) return 2;
+        printf("{\"operation\":\"spawn_setpgroup\",\"changed_group\":%s,\"error\":0}\n",
+               getpgrp() != (pid_t)atoi(argv[2]) ? "true" : "false");
+        return 0;
+    }
+    if (strcmp(operation, "spawn_setpgroup") == 0) {
+        posix_spawnattr_t attributes;
+        if (posix_spawnattr_init(&attributes) != 0) return 2;
+        if (posix_spawnattr_setpgroup(&attributes, 0) != 0 ||
+            posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP) != 0) return 2;
+        char group[32];
+        snprintf(group, sizeof group, "%d", original_group);
+        char *arguments[] = {argv[0], "spawn_child", group, NULL};
+        pid_t child;
+        int error = posix_spawn(&child, argv[0], NULL, &attributes, arguments, environ);
+        posix_spawnattr_destroy(&attributes);
+        return error ? 2 : wait_child(child);
+    }
+    pid_t child = fork();
+    if (child != 0) return wait_child(child);
+    int result;
+    if (strcmp(operation, "setsid") == 0) result = setsid();
+    else if (strcmp(operation, "setpgid") == 0) result = setpgid(0, 0);
+    else if (strcmp(operation, "daemon") == 0) result = daemon(1, 1);
+    else _exit(2);
+    int error = result < 0 ? errno : 0;
+    printf("{\"operation\":\"%s\",\"changed_group\":%s,\"error\":%d}\n", operation,
+           getpgrp() != original_group ? "true" : "false", error);
+    fflush(stdout);
+    _exit(0);
+}
+""")
+            subprocess.run(["/usr/bin/cc", "-std=c11", "-Wno-deprecated-declarations", str(source), "-o", str(executable)],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=True)
             environment = {"PATH": "/usr/bin:/bin", "HOME": str(workspace), "TMPDIR": str(workspace)}
-            probe = """
-import ctypes, json, os, sys
-operation = sys.argv[1]
-original_group = os.getpgrp()
-def result(error=None):
-    print(json.dumps({'operation': operation, 'escaped_group': os.getpgrp() != original_group,
-                      'error': error}), flush=True)
-if operation == 'spawn_setpgroup':
-    code = 'import json,os; print(json.dumps({"operation":"spawn_setpgroup","escaped_group":os.getpgrp()!=' + str(original_group) + ',"error":None}),flush=True)'
-    child = os.posix_spawn(sys.executable, [sys.executable, '-c', code], os.environ, setpgroup=0)
-    _, status = os.waitpid(child, 0)
-    os._exit(os.waitstatus_to_exitcode(status))
-child = os.fork()
-if child:
-    _, status = os.waitpid(child, 0)
-    os._exit(os.waitstatus_to_exitcode(status))
-try:
-    if operation == 'setsid': os.setsid()
-    elif operation == 'setpgid': os.setpgid(0, 0)
-    elif operation == 'daemon':
-        libc = ctypes.CDLL(None, use_errno=True)
-        libc.daemon.argtypes = [ctypes.c_int, ctypes.c_int]
-        libc.daemon.restype = ctypes.c_int
-        if libc.daemon(1, 1) != 0: raise OSError(ctypes.get_errno(), 'daemon')
-    else: raise AssertionError(operation)
-except OSError as error:
-    result(error.errno)
-else:
-    result()
-os._exit(0)
-"""
             evidence = {}
             for label, profile in (("current_profile", base_profile), ("syscall_filter_only", syscall_profile)):
                 evidence[label] = {}
                 for operation in ("setsid", "setpgid", "daemon", "spawn_setpgroup"):
                     with self.subTest(profile=label, operation=operation):
                         completed = subprocess.run(
-                            [str(self.launcher), "-p", profile, interpreter, "-c", probe, operation],
+                            [str(self.launcher), "-p", profile, str(executable), operation],
                             cwd=workspace, env=environment, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
                             start_new_session=True, check=False,
@@ -569,8 +595,8 @@ os._exit(0)
                         observed = json.loads(completed.stdout)
                         evidence[label][operation] = observed
                         expected_escape = label == "current_profile" or operation == "spawn_setpgroup"
-                        self.assertEqual(observed["escaped_group"], expected_escape, observed)
-                        self.assertEqual(observed["error"], None if expected_escape else 1, observed)
+                        self.assertEqual(observed["changed_group"], expected_escape, observed)
+                        self.assertEqual(observed["error"], 0 if expected_escape else 1, observed)
             print("SEATBELT_LIFETIME_LIMIT=" + json.dumps(evidence, sort_keys=True), flush=True)
 
     def test_native_seatbelt_file_network_rules_with_reachable_baselines(self):
