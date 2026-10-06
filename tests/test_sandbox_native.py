@@ -536,6 +536,26 @@ print('profile file/network checks passed; strict lifecycle not supported')
                 for label, argv in (("system true", ["/usr/bin/true"]), ("Python startup", [interpreter, "-c", "pass"])):
                     probe = subprocess.run([str(self.launcher), "-p", profile, *argv], cwd=workspace, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, check=False)
                     bootstrap.append(f"{label}: returncode={probe.returncode}, stdout={probe.stdout!r}, stderr={probe.stderr!r}")
+                # This permissive profile runs ONLY /usr/bin/true as a
+                # diagnostic to distinguish launcher/OS failure from a missing
+                # runtime operation. It never replaces the acceptance profile.
+                baseline = subprocess.run([str(self.launcher), "-p", "(version 1)(allow default)(deny network*)", "/usr/bin/true"], cwd=workspace, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, check=False)
+                bootstrap.append(f"allow-default true diagnostic: returncode={baseline.returncode}, stdout={baseline.stdout!r}, stderr={baseline.stderr!r}")
+                try:
+                    log = subprocess.run(["/usr/bin/log", "show", "--style", "compact", "--last", "1m", "--predicate", 'eventMessage CONTAINS[c] "Sandbox:" OR process == "sandboxd"'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, check=False)
+                    bootstrap.append("Recent native sandbox diagnostics:\n" + log.stdout.decode(errors="replace")[-12000:] + log.stderr.decode(errors="replace")[-1000:])
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    bootstrap.append(f"Native diagnostic log unavailable: {error}")
+                crash_root = Path.home() / "Library/Logs/DiagnosticReports"
+                reports = []
+                for pattern in ("sandbox-exec*.ips", "true*.ips", "Python*.ips", "python*.ips"):
+                    reports.extend(crash_root.glob(pattern))
+                for report in sorted(reports, key=lambda path: path.stat().st_mtime, reverse=True)[:3]:
+                    if report.stat().st_mtime >= time.time() - 120:
+                        try:
+                            bootstrap.append(f"Recent fixture crash report {report.name}:\n" + report.read_text(errors="replace")[:16000])
+                        except OSError as error:
+                            bootstrap.append(f"Crash report unavailable: {error}")
                 diagnostic = (f"Seatbelt fixture returncode={completed.returncode}; interpreter={interpreter}\n"
                               f"stdout={completed.stdout!r}\nstderr={completed.stderr!r}\n"
                               + "\n".join(bootstrap) + "\nProfile:\n" + profile)

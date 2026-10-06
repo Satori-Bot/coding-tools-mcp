@@ -71,6 +71,8 @@ class SandboxTests(unittest.TestCase):
         self.assertNotIn("(allow network", profile)
         self.assertNotIn("(allow mach-lookup", profile)
         self.assertIn("(allow file-map-executable (subpath", profile)
+        self.assertIn('(allow file-read* (literal "/"))', profile)
+        self.assertNotIn('(subpath "/")', profile)
         self.assertIn("(deny file-read* file-write*", profile)
 
     def test_root_grant_rejected(self):
@@ -152,6 +154,21 @@ class SandboxTests(unittest.TestCase):
             with self.assertRaises(ToolFailure) as caught:
                 backend._bwrap(())
         self.assertIn("0.12.0", caught.exception.message)
+
+    @unittest.skipIf(os.name == "nt", "POSIX descriptor-backed launch planning")
+    def test_user_namespace_is_required_not_optional(self):
+        backend = SandboxBackend(self.spec())
+        descriptors = []
+        try:
+            with patch.object(backend, "_bwrap", return_value=Path("/usr/bin/bwrap")):
+                argv = backend._linux_argv(["/bin/true"], self.workspace, 77, "a" * 64, descriptors, (self.workspace,), (self.workspace,))
+            self.assertIn("--unshare-all", argv)
+            self.assertIn("--unshare-user", argv)
+            self.assertIn("--disable-userns", argv)
+            self.assertNotIn("--unshare-user-try", argv)
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
 
     def test_missing_bwrap_raises_domain_failure(self):
         backend = SandboxBackend(self.spec())

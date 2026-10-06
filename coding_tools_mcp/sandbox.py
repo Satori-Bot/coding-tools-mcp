@@ -131,7 +131,9 @@ def seatbelt_profile(spec: SandboxSpec) -> str:
         "(version 1)", "(deny default)", "(deny network*)",
         "(allow process-exec)", "(allow process-fork)",
         "(allow signal (target same-sandbox))",
-        '(allow file-read-metadata (literal "/"))',
+        # Runtime startup/getcwd can open the root directory for reading.
+        # A literal root grant does not authorize any descendant file.
+        '(allow file-read* (literal "/"))',
         '(allow file-read* file-write-data (literal "/dev/null"))',
         '(allow file-read* (literal "/dev/urandom"))',
         # Loader/CPython platform metadata only; this grants no Mach service,
@@ -262,7 +264,7 @@ class SandboxBackend:
         bwrap = self._bwrap(writes)
         helper_fd = self._helper_fd(writes)
         fds.append(helper_fd)
-        command = [str(bwrap), "--unshare-all", "--die-with-parent", "--new-session", "--disable-userns", "--cap-drop", "ALL", "--tmpfs", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/tmp/home"]
+        command = [str(bwrap), "--unshare-all", "--unshare-user", "--die-with-parent", "--new-session", "--disable-userns", "--cap-drop", "ALL", "--tmpfs", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/tmp/home"]
         # Parent roots before children; writable overlays follow readonly views.
         # FD binding (>= 0.12) verifies inode identity even if renamed mid-launch.
         for mode, roots in (("--ro-bind-fd", reads), ("--bind-fd", writes)):
