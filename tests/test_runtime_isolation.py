@@ -10,7 +10,7 @@ from coding_tools_mcp.errors import ToolFailure
 from coding_tools_mcp.file_broker import broker_supported
 from coding_tools_mcp.policy import IsolationConfig
 from coding_tools_mcp.project_context import ProjectContext
-from coding_tools_mcp.server import Runtime
+from coding_tools_mcp.server import Runtime, WorkspaceMutationPolicy
 
 
 @unittest.skipUnless(broker_supported(), "POSIX handle-relative file broker")
@@ -69,6 +69,24 @@ class RuntimeIsolationTests(unittest.TestCase):
             with self.assertRaises(ToolFailure) as caught:
                 Runtime(self.root, isolation=IsolationConfig(mode="strict"))
         self.assertEqual(caught.exception.code, "SANDBOX_UNAVAILABLE")
+
+    def test_unresolvable_write_path_fails_before_command_state_is_allocated(self) -> None:
+        loop = self.root / "loop"
+        loop.symlink_to(loop)
+        with patch("coding_tools_mcp.server.WorkspaceCommandManager") as manager:
+            with self.assertRaises(ToolFailure) as caught:
+                Runtime(self.root, isolation=IsolationConfig(mode="strict"),
+                        workspace_mutation=WorkspaceMutationPolicy(mode="structured-only", write_paths=("loop",)))
+        self.assertEqual(caught.exception.code, "INVALID_ARGUMENT")
+        manager.assert_not_called()
+
+    def test_compatibility_still_drops_unresolvable_write_paths(self) -> None:
+        loop = self.root / "loop"
+        loop.symlink_to(loop)
+        runtime = Runtime(self.root, project_context=ProjectContext((), (), ()),
+                          workspace_mutation=WorkspaceMutationPolicy(mode="structured-only", write_paths=("loop",)))
+        self.addCleanup(runtime.close)
+        self.assertEqual(runtime.workspace_write_paths(), [])
 
     def test_runtime_maintenance_cannot_follow_command_created_symlinks(self) -> None:
         import os

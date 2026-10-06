@@ -1893,10 +1893,10 @@ class Runtime:
     def _resolve_workspace_write_paths(self) -> list[Path]:
         """Resolve and validate the configured workspace write allowlist.
 
-        A write path that escapes the workspace would widen the sandbox past
-        the boundary every other tool enforces, so it is dropped rather than
-        honoured. Resolution is deliberately side-effect free: reporting tools
-        must not create directories merely by describing the policy.
+        Unresolvable paths and paths outside the workspace are rejected in
+        strict mode. Compatibility mode drops them rather than widening the
+        write grant. Resolution is deliberately side-effect free: reporting
+        tools must not create directories merely by describing the policy.
         """
 
         resolved: list[Path] = []
@@ -1905,7 +1905,10 @@ class Runtime:
             absolute = candidate if candidate.is_absolute() else self.workspace.root / candidate
             try:
                 real = absolute.resolve(strict=False)
-            except OSError:
+            except (OSError, RuntimeError, ValueError) as exc:
+                if self.isolation.mode == "strict":
+                    raise ToolFailure("INVALID_ARGUMENT", "A configured workspace write path cannot be resolved.",
+                                      category="validation", details={"path": entry}) from exc
                 continue
             if not is_relative_to(real, self.workspace.root) and self.isolation.mode == "strict":
                 raise ToolFailure("INVALID_ARGUMENT", "Strict write paths must stay inside the workspace.", category="security", details={"path": entry})

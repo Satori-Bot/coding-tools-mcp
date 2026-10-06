@@ -108,19 +108,23 @@ class ExecutionPolicyTests(unittest.TestCase):
                     self.assertEqual(caught.exception.code, "INVALID_ARGUMENT")
 
     @unittest.skipIf(os.name == "nt", "POSIX symlink fixture")
-    def test_cli_rejects_invalid_read_root_without_traceback(self) -> None:
-        loop = self.root / "loop"
+    def test_cli_rejects_invalid_roots_without_traceback(self) -> None:
+        loop = self.workspace / "loop"
         loop.symlink_to(loop)
-        cases = ((str(loop), "ERROR: INVALID_ARGUMENT:"), ("~coding_tools_missing_user_3fa946a9/root", "ERROR:"))
-        for root, diagnostic in cases:
+        cases = (
+            (("--sandbox-read-root", str(loop)), "ERROR: INVALID_ARGUMENT:"),
+            (("--sandbox-read-root", "~coding_tools_missing_user_3fa946a9/root"), "ERROR:"),
+            (("--workspace-mutation", "structured-only", "--write-path", str(loop)), "ERROR: INVALID_ARGUMENT:"),
+        )
+        for options, diagnostic in cases:
             for transport in (("--stdio",), ("--host", "127.0.0.1", "--port", "0")):
-                self._check_invalid_cli_root(root, transport, diagnostic)
+                self._check_invalid_cli_options(options, transport, diagnostic)
 
-    def _check_invalid_cli_root(self, root: str, transport: tuple[str, ...], diagnostic: str) -> None:
-        with self.subTest(root=root, transport=transport):
+    def _check_invalid_cli_options(self, options: tuple[str, ...], transport: tuple[str, ...], diagnostic: str) -> None:
+        with self.subTest(options=options, transport=transport):
             result = subprocess.run(
                 [sys.executable, "-m", "coding_tools_mcp", "--workspace", str(self.workspace),
-                 "--execution-isolation", "strict", "--sandbox-read-root", root, *transport],
+                 "--execution-isolation", "strict", *options, *transport],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, timeout=10, env={**os.environ, "CODING_TOOLS_MCP_TELEMETRY": "off"},
             )
