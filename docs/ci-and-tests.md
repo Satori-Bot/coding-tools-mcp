@@ -27,6 +27,11 @@ workflow. This pipeline only publishes versions greater than `0.5.0`.
    Keep the version and complete release metadata together in one commit. Use
    squash merge or a merge commit for multi-commit release PRs; rebase-merging a
    version bump before its changelog would correctly fail release validation.
+   The currently published npm `0.1.0` still records repository directory
+   `npm/coding-tools-mcp`; main now records `packages/npm-launcher`. That is a
+   real packed-metadata change, so the next release PR must bump the launcher
+   to a new unused version (for example `0.1.1`) even if its executable is
+   unchanged. The verifier deliberately rejects reusing `0.1.0` for this tree.
 2. Merge the PR into `main` after the checks pass. Main must be protected so
    only reviewed release PRs can introduce versions. Do not create a tag.
 3. `.github/workflows/release.yml` selects the first-parent main commit that
