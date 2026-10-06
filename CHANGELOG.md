@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- Adjacent `@@` anchors must contain meaningful text before they count as
+  evidence that a patch was already applied. Punctuation-only anchors now
+  leave failed hunks as errors without partially writing other files.
+- The `apply_changes` schema and runtime contract consistently describe
+  matching `line`/`start_line` aliases with an explicit `end_line`, preserving
+  existing accepted inputs.
+- Model-visible text escapes non-UTF-8 filesystem characters instead of
+  raising an internal error. Structured paths retain the original characters
+  for lossless filesystem and JSON round trips.
+
 - Repeated tool failures now add a nonblocking, model-visible warning instead
   of refusing the third call. External changes and other clients can recover
   immediately; normal permission, path, schema, revision, and resource checks

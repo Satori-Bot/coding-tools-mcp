@@ -469,9 +469,12 @@ def _render_tool_call(tool: str, arguments: dict[str, Any]) -> str:
 
 
 def _bounded_model_text(value: str, tool_name: str) -> str:
-    encoded = value.encode("utf-8")
+    # POSIX byte filenames can contain surrogateescape characters. Display
+    # those as literal \\udcXX escapes; structuredContent retains the original
+    # path for filesystem round trips through JSON's existing ASCII escaping.
+    encoded = value.encode("utf-8", errors="backslashreplace")
     if len(encoded) <= MODEL_TEXT_SAFETY_LIMIT_BYTES:
-        return value
+        return encoded.decode("utf-8")
     suffix = (
         f"\n… {tool_name} model text reached the "
         f"{MODEL_TEXT_SAFETY_LIMIT_BYTES}-byte safety ceiling; retry with narrower paths or limits."

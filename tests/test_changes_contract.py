@@ -303,7 +303,7 @@ class LenientEditFieldTests(unittest.TestCase):
     """Item 5: unambiguous schema-following spellings are accepted."""
 
     def test_line_is_shorthand_for_a_one_line_replace_or_delete(self) -> None:
-        """Verify the line alias selects a single replacement or deletion unless a range is given."""
+        """Verify line alone selects one line and explicit start_line permits a range."""
         self.assertEqual(apply_text("a\nb\nc\n", [{"op": "replace", "line": 2, "content": "B"}]), "a\nB\nc\n")
         self.assertEqual(apply_text("a\nb\nc\n", [{"op": "delete", "line": 2}]), "a\nc\n")
         self.assertEqual(
@@ -338,6 +338,48 @@ class LenientEditFieldTests(unittest.TestCase):
                 parse_changes([{"action": "edit", "path": "f", "revision": "r", "edits": [raw]}])
             self.assertEqual(raised.exception.code, "INVALID_ARGUMENT")
             self.assertIn("edits[0]", raised.exception.message)
+
+
+class RangeAliasContractTests(RuntimeCase):
+    """The public runtime preserves explicit ranges and rejects ambiguous aliases."""
+
+    def test_matching_line_and_start_line_can_address_a_range(self) -> None:
+        """Accept redundant start aliases and apply the inclusive end for both range operations."""
+        for op, expected in (
+            ("replace", "l1\nreplacement\nl4\n"),
+            ("delete", "l1\nl4\n"),
+        ):
+            with self.subTest(op=op):
+                path = f"{op}.txt"
+                (self.workspace / path).write_text("l1\nl2\nl3\nl4\n", encoding="utf-8")
+                edit: dict[str, Any] = {"op": op, "line": 2, "start_line": 2, "end_line": 3}
+                if op == "replace":
+                    edit["content"] = "replacement"
+                result = self.edit(self.revision(path), edit, path=path)
+                self.assertFalse(result["isError"], result)
+                self.assertEqual((self.workspace / path).read_text(encoding="utf-8"), expected)
+                self.assertEqual(
+                    result["structuredContent"]["affected_files"][0]["revision"], self.revision(path)
+                )
+
+    def test_conflicting_range_aliases_leave_the_file_unchanged(self) -> None:
+        """Reject unequal starts and line-only ranges before committing either operation."""
+        before = (self.workspace / "a.txt").read_bytes()
+        revision = self.revision()
+        for op in ("replace", "delete"):
+            for fields in (
+                {"line": 2, "start_line": 3, "end_line": 3},
+                {"line": 2, "end_line": 3},
+            ):
+                with self.subTest(op=op, fields=fields):
+                    edit: dict[str, Any] = {"op": op, **fields}
+                    if op == "replace":
+                        edit["content"] = "replacement"
+                    result = self.edit(revision, edit)
+                    self.assertTrue(result["isError"], result)
+                    self.assertEqual(result["structuredContent"]["error"]["code"], "INVALID_ARGUMENT")
+                    self.assertEqual((self.workspace / "a.txt").read_bytes(), before)
+                    self.assertEqual(self.revision(), revision)
 
 
 class DuplicatePathTests(RuntimeCase):

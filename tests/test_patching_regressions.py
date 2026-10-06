@@ -61,8 +61,8 @@ class RuntimePatchCase(unittest.TestCase):
         self.addCleanup(self.runtime.close)
 
     def write(self, name: str, body: str) -> None:
-        """Write a UTF-8 fixture file in the test workspace."""
-        (self.root / name).write_text(body, encoding="utf-8")
+        """Write exact UTF-8 fixture bytes without platform newline translation."""
+        (self.root / name).write_bytes(body.encode("utf-8"))
 
     def read(self, name: str) -> str:
         """Read a UTF-8 fixture file from the test workspace."""
@@ -100,6 +100,42 @@ class AlreadyAppliedEvidenceTests(RuntimePatchCase):
         result = self.patch("*** Update File: a.js\n@@\n-    y = 0\n+    x = 1\n }\n")
         self.assert_error(result, "PATCH_CONTEXT_NOT_FOUND")
         self.assertEqual(self.read("a.js"), original)
+
+    def test_punctuation_or_blank_anchor_does_not_prove_a_patch_landed(self) -> None:
+        """Reject a lone result line beneath an anchor that supplies no substantive evidence."""
+        for anchor in ("}", ")", "[];,", ""):
+            with self.subTest(anchor=anchor):
+                original = anchor + "\nx = 1\n"
+                self.write("a.txt", original)
+                result = self.runtime.call_tool(
+                    "apply_patch",
+                    {"patch": envelope(f"*** Update File: a.txt\n@@ {anchor}\n-missing = 0\n+x = 1\n")},
+                )
+                self.assertTrue(result["isError"], result)
+                self.assert_error(result["structuredContent"], "PATCH_CONTEXT_NOT_FOUND")
+                self.assertEqual((self.root / "a.txt").read_bytes(), original.encode("utf-8"))
+
+    def test_punctuation_anchor_failure_prevents_other_files_from_being_written(self) -> None:
+        """Keep a valid earlier file edit atomic with a later unsupported already-applied claim."""
+        self.write("first.txt", "old\n")
+        self.write("second.txt", "}\nx = 1\n")
+        result = self.patch(
+            "*** Update File: first.txt\n@@\n-old\n+new\n"
+            "*** Update File: second.txt\n@@ }\n-missing = 0\n+x = 1\n"
+        )
+        self.assert_error(result, "PATCH_CONTEXT_NOT_FOUND")
+        self.assertEqual((self.root / "first.txt").read_bytes(), b"old\n")
+        self.assertEqual((self.root / "second.txt").read_bytes(), b"}\nx = 1\n")
+
+    def test_substantive_adjacent_anchor_can_prove_a_patch_is_already_applied(self) -> None:
+        """Preserve a meaningful anchor's evidence for its immediately adjacent result line."""
+        original = "[server]\ntimeout = 30\n"
+        self.write("app.ini", original)
+        result = self.patch("*** Update File: app.ini\n@@ [server]\n-timeout = 20\n+timeout = 30\n")
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["already_applied"], result)
+        self.assertEqual((result["additions"], result["removals"]), (0, 0))
+        self.assertEqual((self.root / "app.ini").read_bytes(), original.encode("utf-8"))
 
     def test_a_false_already_applied_hunk_fails_the_whole_patch(self) -> None:
         """Verify an unsupported already-applied claim prevents every hunk from being committed."""
@@ -301,6 +337,27 @@ class CodexLocatingTests(RuntimePatchCase):
 
 
 class ParserAndLocatorUnitTests(unittest.TestCase):
+    def test_punctuation_and_blank_anchors_are_not_already_applied_evidence(self) -> None:
+        """Do not count any matched punctuation or blank scope as a second evidence line."""
+        for anchor in ("}", ")", "[];,", "", " \t"):
+            with self.subTest(anchor=anchor):
+                with self.assertRaises(ToolFailure) as raised:
+                    apply_update_hunks_detailed(
+                        anchor + "\nx = 1\n", [PatchHunk(["-missing = 0", "+x = 1"], anchor)]
+                    )
+                self.assertEqual(raised.exception.code, "PATCH_CONTEXT_NOT_FOUND")
+
+    def test_substantive_anchor_still_counts_as_already_applied_evidence(self) -> None:
+        """Accept a single result line when its adjacent anchor identifies a real section."""
+        original = "[server]\ntimeout = 30\n"
+        outcome = apply_update_hunks_detailed(
+            original, [PatchHunk(["-timeout = 20", "+timeout = 30"], "[server]")]
+        )
+        self.assertEqual(outcome.content, original)
+        self.assertEqual(outcome.already_applied_hunks, [0])
+        self.assertEqual(outcome.applied_hunks, 0)
+        self.assertEqual(outcome.changed_ranges, [])
+
     def test_consecutive_headers_are_kept_as_nested_scopes(self) -> None:
         """Verify consecutive anchor headers form nested scopes that reset for the next hunk."""
         operations = parse_patch(envelope("*** Update File: a.py\n@@ class B:\n@@ def run(self):\n-x\n+y\n@@ other\n-p\n+q\n"))

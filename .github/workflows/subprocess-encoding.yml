@@ -46,6 +46,9 @@ jobs:
       - name: Probe real byte boundaries
         shell: bash
         run: python -X utf8=0 -m tests.test_subprocess_encoding_boundaries 2>&1 | tee encoding-results.txt
+      - name: Check Windows command lifecycle and encoding wrappers
+        if: runner.os == 'Windows'
+        run: python -X utf8=0 -m unittest tests.test_exec_commands tests.test_windows_subprocess_encoding
       - name: Save evidence including failures
         if: always()
         uses: actions/upload-artifact@v7.0.1

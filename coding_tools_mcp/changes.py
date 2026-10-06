@@ -246,9 +246,10 @@ def _parse_edit(entry: dict[str, Any], where: str, position: int) -> LineEdit:
 def _range_lines(entry: dict[str, Any], location: str, op: str) -> tuple[int, int]:
     """Resolve the inclusive 1-based range a replace or delete addresses.
 
-    ``line`` is accepted as shorthand for a one-line range, because a client
-    that follows the schema alone cannot tell which numbering fields an
-    operation takes. Only combinations that say one thing are accepted.
+    Without ``start_line``, ``line`` is shorthand for a one-line range, so
+    ``end_line`` must be absent or equal to ``line``. With an explicit
+    ``start_line``, ``line`` must equal it, and ``end_line`` may extend the
+    range. In either spelling, an omitted ``end_line`` defaults to the start.
     """
 
     has_start = entry.get("start_line") is not None

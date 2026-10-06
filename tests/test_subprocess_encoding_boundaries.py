@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from coding_tools_mcp.server import Runtime, Workspace
+from coding_tools_mcp.server import Runtime, Workspace, json_response_payload
 from coding_tools_mcp.errors import ToolFailure
 
 
@@ -137,12 +137,9 @@ class SubprocessEncodingBoundaryTests(unittest.TestCase):
         self.assertIsNotNone(result, "fd fast path failed or silently fell back")
         self.assertIn(name, [x["path"] for x in result["files"]])
 
-    @unittest.skipUnless(
-        shutil.which("fd") or shutil.which("fdfind"), "fd not installed"
-    )
     @unittest.skipIf(os.name == "nt", "POSIX byte filenames only")
-    def test_fd_nonutf8_name_is_not_silently_omitted(self):
-        """Fd nonutf8 name is not silently omitted."""
+    def test_nonutf8_filename_survives_mcp_serialization(self):
+        """Real fd/Python fallback paths remain intact in UTF-8-safe MCP results."""
         name = os.fsdecode(b"raw-\xff.txt")
         os.close(
             os.open(
@@ -151,8 +148,36 @@ class SubprocessEncodingBoundaryTests(unittest.TestCase):
                 0o600,
             )
         )
-        result = self.runtime.list_files({"patterns": ["**"], "include_ignored": True})
-        self.assertIn(name, [x["path"] for x in result["files"]])
+        utf8_name = "\u6587\u4ef6.txt"
+        (self.root / utf8_name).write_text("hello", encoding="utf-8")
+        fd = shutil.which("fd") or shutil.which("fdfind")
+        if fd:
+            # Confirm that the real subprocess emits undecodable path bytes,
+            # rather than supplying an already-decoded string from a mock.
+            completed = subprocess.run(
+                [fd, "--glob", "**", "."],
+                cwd=self.root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+            self.assertIn(b"raw-\xff.txt", completed.stdout)
+
+        result = self.runtime.call_tool(
+            "list_files", {"patterns": ["**"], "include_ignored": True}
+        )
+        self.assertFalse(result["isError"], result)
+        paths = [item["path"] for item in result["structuredContent"]["files"]]
+        self.assertIn(name, paths)
+        self.assertIn(utf8_name, paths)
+        self.assertEqual(os.fsencode(paths[paths.index(name)]), b"raw-\xff.txt")
+        text = "\n".join(item["text"] for item in result["content"] if item["type"] == "text")
+        self.assertIn("raw-\\udcff.txt", text)
+        self.assertIn(utf8_name, text)
+        self.assertNotIn("\ufffd", text)
+        self.assertEqual(text.encode("utf-8").decode("utf-8"), text)
+        decoded = json.loads(json_response_payload(result))
+        self.assertEqual(decoded, result)
 
     @unittest.skipUnless(shutil.which("rg"), "ripgrep not installed")
     def test_rg_utf8_json(self):

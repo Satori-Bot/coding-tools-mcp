@@ -837,8 +837,12 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
             "upsert: it needs the revision when the path exists, but may omit it when creating a missing "
             "path. edit, delete, move, and copy always need it; create rejects it and asserts absence "
             "(re-sending identical content is a no-op). edit takes line operations: replace and delete "
-            "use start_line and optional end_line (or line for one line); insert_after and "
-            "insert_before use line. All numbers refer to the file as read, not to the result of "
+            "use start_line and optional end_line (inclusive, defaulting to start_line), or line "
+            "for one line. If line and start_line are both supplied they must agree; explicit "
+            "start_line allows end_line to extend the range. With line alone, any end_line must "
+            "equal line. insert_after and insert_before use line, or start_line as the anchor; "
+            "any supplied numbering fields must equal that anchor. All numbers refer to the "
+            "file as read, not to the result of "
             "earlier edits in the same call. content is whole lines: \"\" is zero lines and a trailing "
             "newline adds a blank line. A path may appear once per call: combine all line edits for "
             "one file into that file's single edit change. Example, with revision set to the value "
@@ -6425,7 +6429,7 @@ def input_schemas() -> dict[str, dict[str, Any]]:
                                     "another edit in the same call, and no two edits may address the "
                                     "same lines. replace: start_line, optional end_line, content. delete: "
                                     "start_line, optional end_line. insert_after / insert_before: line, "
-                                    "content."
+                                    "content. See the numbering field descriptions for accepted aliases."
                                 ),
                                 "items": object_schema(
                                     {
@@ -6442,16 +6446,21 @@ def input_schemas() -> dict[str, dict[str, Any]]:
                                             "minimum": 1,
                                             "description": (
                                                 "Used by replace and delete: first line of the range, "
-                                                "1-based and inclusive. insert_after and insert_before "
-                                                "accept it in place of line."
+                                                "1-based and inclusive. If line is also supplied it "
+                                                "must equal start_line; end_line may extend the range. "
+                                                "insert_after and insert_before accept it in place of "
+                                                "line; both must agree when supplied together."
                                             ),
                                         },
                                         "end_line": {
                                             **integer,
                                             "minimum": 1,
                                             "description": (
-                                                "Used by replace and delete only: last line of the "
-                                                "range, inclusive; defaults to start_line."
+                                                "Used by replace and delete: last line of the range, "
+                                                "inclusive and >= start_line; defaults to start_line. "
+                                                "With line but no start_line, it must equal line. "
+                                                "insert_after and insert_before accept it only when "
+                                                "equal to their line or start_line anchor."
                                             ),
                                         },
                                         "line": {
@@ -6461,8 +6470,10 @@ def input_schemas() -> dict[str, dict[str, Any]]:
                                                 "Used by insert_after (0 to total_lines, where 0 "
                                                 "inserts at the beginning) and insert_before (1 to "
                                                 "total_lines + 1, where total_lines + 1 appends). "
-                                                "replace and delete accept it as shorthand for "
-                                                "start_line = end_line = line."
+                                                "replace and delete accept it as shorthand for one "
+                                                "line: without start_line, end_line must be omitted or "
+                                                "equal line. With explicit start_line, line must equal "
+                                                "start_line and end_line may extend the range."
                                             ),
                                         },
                                         "content": {

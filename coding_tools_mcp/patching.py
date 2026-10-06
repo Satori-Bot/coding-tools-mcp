@@ -819,9 +819,9 @@ def _already_applied(
     - A pure-context hunk has identical old and new text, so "already applied"
       would be indistinguishable from "never applied" and is not claimed.
     - Blank and punctuation-only lines are never evidence. The located result
-      needs two evidence lines — the ``@@`` anchor counts as one when the
-      result sits directly below it — and a hunk that adds lines must add at
-      least one evidence line. A lone ``timeout = 30`` found after a section
+      needs two evidence lines — a substantive ``@@`` anchor counts as one
+      when the result sits directly below it — and a hunk that adds lines must
+      add at least one evidence line. A lone ``timeout = 30`` found after a section
       header is a coincidence, not proof that this hunk ran.
 
     Codex has no "already applied" notion: every case this function accepts
@@ -849,7 +849,11 @@ def _already_applied(
             ]
         if len(selected) == 1:
             located = selected[0]
-            below_anchor = anchor_line is not None and located == anchor_line + 1
+            below_anchor = (
+                anchor_line is not None
+                and located == anchor_line + 1
+                and _is_evidence(lines[anchor_line])
+            )
             if evidence + below_anchor < 2:
                 return None
             return located

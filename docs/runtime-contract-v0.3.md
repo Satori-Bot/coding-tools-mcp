@@ -603,13 +603,19 @@ Each entry of `edits` is one of:
 - `{"op": "insert_before", "line": n, "content": "…"}` where `n` is in
   `[1, total_lines + 1]` and `total_lines + 1` appends
 
-`end_line` is inclusive and defaults to `start_line`. Because a client that
-follows the schema alone cannot tell which numbering field an operation takes,
-the unambiguous alternatives are accepted: `replace` and `delete` take `line`
-as shorthand for `start_line = end_line = line`, and `insert_after` and
-`insert_before` take `start_line` (with an equal `end_line`, if any) in place of
-`line`. Two fields that disagree are `INVALID_ARGUMENT`. Every line number refers
-to the file as `read_file` reported it, never to the result of an earlier edit
+`end_line` is inclusive, must be at least `start_line`, and defaults to it.
+For `replace` and `delete`, `line` without `start_line` selects one line;
+`end_line` must be omitted or equal to `line`. When both `line` and
+`start_line` are supplied, they must agree, and the explicit `start_line`
+allows `end_line` to extend the range. For example, `line: 2, start_line: 2,
+end_line: 3` selects lines 2–3, while `line: 2, end_line: 3` is
+`INVALID_ARGUMENT`.
+
+For `insert_after` and `insert_before`, `start_line` can stand in for `line`.
+Any supplied `line`, `start_line`, and `end_line` must equal the insertion
+anchor; insertions do not accept a range. Conflicting aliases are
+`INVALID_ARGUMENT`. Every line number refers to the file as `read_file`
+reported it, never to the result of an earlier edit
 in the same call, so the caller does not track its own shifts. Two edits that
 address the same lines — including two insertions at one point — are
 `PATCH_HUNKS_OVERLAP`. A line number past the end is `INVALID_ARGUMENT` with

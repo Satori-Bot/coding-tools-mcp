@@ -156,7 +156,10 @@ class OutputRefTests(_RuntimeCase):
 
     def test_read_output_accepts_a_bare_command_id_or_command_prefix_with_stream(self) -> None:
         """Verify short output references normalize correctly with explicit or default streams."""
-        payload = self.start("echo out; echo err >&2", yield_time_ms=10_000)
+        payload = self.start(
+            f'{PY} -c "import sys; print(\'out\'); print(\'err\', file=sys.stderr)"',
+            yield_time_ms=10_000,
+        )
         command_id = payload["command_id"]
         cases = [
             ({"output_ref": command_id}, "stdout", "out"),
