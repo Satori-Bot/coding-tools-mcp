@@ -711,13 +711,15 @@ class NativePlatformRejectionTests(unittest.TestCase):
                 "product_type": sys.getwindowsversion().product_type,
                 "architecture": platform.machine(), "process_bits": ctypes.sizeof(ctypes.c_void_p) * 8,
                 "runner_image_version": os.environ.get("ImageVersion"),
+                "dll_loaded": False,
             }
             names = ("CreateProcessSecurityEnvironment", "QueryProcessSecurityEnvironmentSupport", "CloseProcessSecurityEnvironment")
             try:
                 processmodel = ctypes.WinDLL("processmodel.dll", winmode=0x00000800)
             except OSError as error:
-                metadata["load_error"] = error.winerror
+                metadata["load_error"] = {"winerror": error.winerror, "errno": error.errno, "message": str(error)}
             else:
+                metadata["dll_loaded"] = True
                 metadata["exports"] = {name: hasattr(processmodel, name) for name in names}
             print("WINDOWS_PSEC_READINESS_ONLY=" + json.dumps(metadata, sort_keys=True), flush=True)
         with tempfile.TemporaryDirectory() as directory:
