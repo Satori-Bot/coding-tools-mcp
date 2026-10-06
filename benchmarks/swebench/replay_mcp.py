@@ -147,6 +147,17 @@ def replay(workspace: Path, expected_content: str, raw_dir: Path, calls: list[di
                 server.wait(timeout=5)
 
 
+def write_report(path: Path, report: dict[str, Any]) -> None:
+    """Replace the summary atomically, including when an attempt is interrupted."""
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".replay-report-", delete=False) as pending:
+        temporary = Path(pending.name)
+    try:
+        temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-checkout", type=Path, help="Read-only local Git source; replay always uses fresh temporary checkouts")
@@ -155,14 +166,17 @@ def main(argv: list[str] | None = None) -> int:
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     calls: list[dict[str, Any]] = []
-    report: dict[str, Any] = {"conclusion": "FAIL", "prediction_source": "mcp_reference_replay", "mcp_calls": calls,
+    report: dict[str, Any] = {"conclusion": "INCONCLUSIVE", "prediction_source": "mcp_reference_replay", "mcp_calls": calls,
                               "official_harness": "NOT_RUN", "limitations": ["Scripted reference repair, not model-generated predictions.",
                               "MCP exec checks syntax and patch whitespace; official resolution is a separate harness stage."]}
-    # Remove only the named generated outputs, so a failed rerun cannot feed an
-    # old successful prediction into a later harness step.
-    for name in ("baseline_native.jsonl", "candidate_mcp.jsonl"):
-        (output / name).unlink(missing_ok=True)
+    report_path = output / "report.json"
+    predictions = [output / name for name in ("baseline_native.jsonl", "candidate_mcp.jsonl")]
+    # Invalidate the old summary before removing predictions or doing any
+    # fallible work. Even an abrupt stop must not leave a prior PASS as current.
     try:
+        write_report(report_path, report)
+        for path in predictions:
+            path.unlink(missing_ok=True)
         pins = load_pins()
         row = replay_instance(pins)
         report.update({"pins": pins, "instance_id": row["instance_id"], "base_commit": row["base_commit"],
@@ -184,14 +198,25 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError("MCP-generated diff differs from native reference replay")
             write_predictions(output / "baseline_native.jsonl", "native_reference_replay", {row["instance_id"]: native_patch})
             write_predictions(output / "candidate_mcp.jsonl", "coding_tools_mcp_reference_replay", {row["instance_id"]: candidate_patch})
-            report.update({"conclusion": "PASS", "candidate_patch_sha256": sha256(candidate_patch.encode()),
-                           "reference_result_sha256": sha256(expected.encode()), "native_diff_matches_mcp": True,
-                           "baseline_predictions": str(output / "baseline_native.jsonl"),
-                           "candidate_predictions": str(output / "candidate_mcp.jsonl")})
+        completed_report = {**report, "conclusion": "PASS", "candidate_patch_sha256": sha256(candidate_patch.encode()),
+                            "reference_result_sha256": sha256(expected.encode()), "native_diff_matches_mcp": True,
+                            "baseline_predictions": str(output / "baseline_native.jsonl"),
+                            "candidate_predictions": str(output / "candidate_mcp.jsonl")}
+        write_report(report_path, completed_report)
+        report = completed_report
     except Exception as exc:
+        report["conclusion"] = "FAIL"
         report["error"] = str(exc)
-    (output / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"MCP reference replay: {report['conclusion']} ({output / 'report.json'})")
+    finally:
+        if report["conclusion"] != "PASS":
+            # Publish non-success before cleanup, even if final PASS publication
+            # was interrupted after its atomic replace had already completed.
+            write_report(report_path, report)
+            # Remove only our named predictions, including partially written
+            # current outputs. Preserve unrelated files and historical evidence.
+            for path in predictions:
+                path.unlink(missing_ok=True)
+    print(f"MCP reference replay: {report['conclusion']} ({report_path})")
     if "error" in report:
         print(report["error"], file=sys.stderr)
     return 0 if report["conclusion"] == "PASS" else 1

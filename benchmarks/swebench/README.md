@@ -51,7 +51,14 @@ It does **not** claim that historical SymPy's tests ran on the host interpreter.
 
 Outputs under `reports/benchmark/swebench-mcp-replay/` include the full MCP
 transcript, server logs, runtime source commit, pins, a status report, and separate
-native/MCP prediction JSONL files. Failed reruns remove stale prediction files.
+native/MCP prediction JSONL files. Each attempt replaces the status report with
+`INCONCLUSIVE` before clearing old predictions or loading inputs. A completed
+replay records `PASS` or `FAIL`; a Ctrl-C interruption stays `INCONCLUSIVE`.
+Failures and Ctrl-C interruptions remove the prediction outputs, including
+partially written files. A forced process termination may prevent cleanup, so
+only a `PASS` replay report identifies a completed prediction pair for the
+subsequent stage. Other files and historical official-harness results are
+preserved.
 The subsequent official harness stage is the source of resolved-instance results.
 
 ```bash

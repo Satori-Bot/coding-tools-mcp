@@ -302,6 +302,32 @@ class WorkflowTests(unittest.TestCase):
 
 
 class ReplayTests(unittest.TestCase):
+    def seed_previous_success(self, root: Path) -> None:
+        row = pinned.replay_instance(pinned.load_pins())
+        for name in ("baseline_native.jsonl", "candidate_mcp.jsonl"):
+            reference.write_predictions(root / name, "historical-source", {row["instance_id"]: row["patch"]})
+        (root / "report.json").write_text(json.dumps({
+            "conclusion": "PASS", "runtime_source_sha": "historical-source",
+            "candidate_patch_sha256": "historical-patch", "official_harness": "PASS",
+            "mcp_calls": [{"tool": "historical-call"}],
+        }))
+        (root / "notes.txt").write_text("unrelated user notes")
+        (root / "historical-official.json").write_text('{"conclusion": "PASS"}')
+
+    def fixture_checkout(self, destination: Path, source: str, commit: str) -> None:
+        pins = pinned.load_pins()
+        self.assertEqual(commit, pins["replay"]["base_commit"])
+        file = destination / replay_mcp.PATH
+        file.parent.mkdir(parents=True)
+        file.write_bytes((pinned.ROOT / pins["replay"]["source_fixture"]).read_bytes())
+        replay_mcp.run(["git", "init", "--quiet"], destination)
+        replay_mcp.run(["git", "add", "."], destination)
+        replay_mcp.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "Fixture"], destination)
+
+    def assert_unrelated_outputs_preserved(self, root: Path) -> None:
+        self.assertEqual((root / "notes.txt").read_text(), "unrelated user notes")
+        self.assertEqual(json.loads((root / "historical-official.json").read_text()), {"conclusion": "PASS"})
+
     def test_line_edit_uses_current_revision_and_unique_context(self) -> None:
         content = "header\n" + replay_mcp.OLD_ENTRY + "\nfooter\n"
         change = replay_mcp.line_edit(content, "revision")["changes"][0]
@@ -343,6 +369,149 @@ class ReplayTests(unittest.TestCase):
                 self.assertEqual(replay_mcp.main(["--output-dir", str(root)]), 1)
             self.assertFalse((root / "candidate_mcp.jsonl").exists())
             self.assertEqual(json.loads((root / "report.json").read_text())["conclusion"], "FAIL")
+
+    def test_incomplete_report_is_persisted_before_prediction_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.seed_previous_success(root)
+            unlink = Path.unlink
+
+            def inspect_before_unlink(path: Path, missing_ok: bool = False) -> None:
+                if path.name in {"baseline_native.jsonl", "candidate_mcp.jsonl"}:
+                    current = json.loads((root / "report.json").read_text())
+                    self.assertEqual(current["conclusion"], "INCONCLUSIVE")
+                    self.assertNotIn("runtime_source_sha", current)
+                    self.assertNotIn("candidate_patch_sha256", current)
+                    self.assertEqual(current["official_harness"], "NOT_RUN")
+                    self.assertEqual(current["mcp_calls"], [])
+                unlink(path, missing_ok=missing_ok)
+
+            with patch.object(Path, "unlink", inspect_before_unlink), patch.object(replay_mcp, "load_pins", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    replay_mcp.main(["--output-dir", str(root)])
+            self.assert_unrelated_outputs_preserved(root)
+
+    def test_failed_or_interrupted_rerun_cannot_reuse_prior_success(self) -> None:
+        for stage in ("load_pins", "checkout", "replay", "write_predictions"):
+            for error in (KeyboardInterrupt, RuntimeError):
+                with self.subTest(stage=stage, error=error), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self.seed_previous_success(root)
+                    writes = 0
+
+                    def replay_fixture(workspace: Path, expected: str, raw_dir: Path, calls: list[dict]) -> str:
+                        calls.append({"tool": "current-call"})
+                        if stage == "replay":
+                            raise error("stopped replay")
+                        (workspace / replay_mcp.PATH).write_text(expected)
+                        return replay_mcp.run(["git", "diff", "--unified=3"], workspace)
+
+                    def write_prediction(path: Path, model: str, patches: dict[str, str]) -> None:
+                        nonlocal writes
+                        writes += 1
+                        reference.write_predictions(path, model, patches)
+                        if stage == "write_predictions" and writes == 2:
+                            raise error("stopped prediction write")
+
+                    with contextlib.ExitStack() as stack:
+                        stack.enter_context(patch.object(replay_mcp, "checkout", side_effect=self.fixture_checkout))
+                        stack.enter_context(patch.object(replay_mcp, "replay", side_effect=replay_fixture))
+                        stack.enter_context(patch.object(replay_mcp, "write_predictions", side_effect=write_prediction))
+                        if stage in {"load_pins", "checkout"}:
+                            stack.enter_context(patch.object(replay_mcp, stage, side_effect=error("stopped preflight")))
+                        stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                        stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+                        if error is KeyboardInterrupt:
+                            with self.assertRaises(KeyboardInterrupt):
+                                replay_mcp.main(["--output-dir", str(root)])
+                        else:
+                            self.assertEqual(replay_mcp.main(["--output-dir", str(root)]), 1)
+                    current = json.loads((root / "report.json").read_text())
+                    self.assertEqual(current["conclusion"], "INCONCLUSIVE" if error is KeyboardInterrupt else "FAIL")
+                    self.assertNotEqual(current.get("runtime_source_sha"), "historical-source")
+                    self.assertNotIn("candidate_patch_sha256", current)
+                    self.assertNotIn("candidate_predictions", current)
+                    self.assertEqual(current["official_harness"], "NOT_RUN")
+                    self.assertNotIn({"tool": "historical-call"}, current["mcp_calls"])
+                    for name in ("baseline_native.jsonl", "candidate_mcp.jsonl"):
+                        path = root / name
+                        self.assertFalse(path.exists())
+                        self.assertTrue(run_smoke.validate_predictions(path, {"sympy__sympy-12419"}).errors)
+                    self.assert_unrelated_outputs_preserved(root)
+
+    def test_successful_rerun_reports_only_current_matching_predictions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.seed_previous_success(root)
+            with patch.object(replay_mcp, "checkout", side_effect=self.fixture_checkout), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(replay_mcp.main(["--output-dir", str(root)]), 0)
+            current = json.loads((root / "report.json").read_text())
+            self.assertEqual(current["conclusion"], "PASS")
+            self.assertEqual(current["runtime_source_sha"], replay_mcp.run(["git", "rev-parse", "HEAD"], replay_mcp.REPO_ROOT).strip())
+            self.assertEqual(current["official_harness"], "NOT_RUN")
+            self.assertTrue(current["native_diff_matches_mcp"])
+            self.assertNotIn({"tool": "historical-call"}, current["mcp_calls"])
+            predictions = []
+            for field in ("baseline_predictions", "candidate_predictions"):
+                path = Path(current[field])
+                self.assertFalse(run_smoke.validate_predictions(path, {current["instance_id"]}).errors)
+                prediction = json.loads(path.read_text())
+                self.assertEqual(prediction["instance_id"], current["instance_id"])
+                self.assertEqual(pinned.sha256(prediction["model_patch"].encode()), current["candidate_patch_sha256"])
+                predictions.append(prediction["model_patch"])
+            self.assertEqual(*predictions)
+            self.assert_unrelated_outputs_preserved(root)
+
+    def test_failed_report_publication_cannot_leave_predictions(self) -> None:
+        for fail_on, after_replace in ((1, False), (1, True), (2, False), (2, True)):
+            for error in (KeyboardInterrupt, OSError):
+                with self.subTest(fail_on=fail_on, after_replace=after_replace, error=error), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self.seed_previous_success(root)
+                    replace = Path.replace
+                    publications = 0
+
+                    def publish(path: Path, target: Path) -> Path:
+                        nonlocal publications
+                        publications += 1
+                        if publications == fail_on:
+                            if after_replace:
+                                replace(path, target)
+                            raise error("stopped report publication")
+                        return replace(path, target)
+
+                    with contextlib.ExitStack() as stack:
+                        stack.enter_context(patch.object(replay_mcp, "checkout", side_effect=self.fixture_checkout))
+                        stack.enter_context(patch.object(Path, "replace", publish))
+                        stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                        stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+                        if error is KeyboardInterrupt:
+                            with self.assertRaises(KeyboardInterrupt):
+                                replay_mcp.main(["--output-dir", str(root)])
+                        else:
+                            self.assertEqual(replay_mcp.main(["--output-dir", str(root)]), 1)
+                    current = json.loads((root / "report.json").read_text())
+                    self.assertEqual(current["conclusion"], "INCONCLUSIVE" if error is KeyboardInterrupt else "FAIL")
+                    self.assertNotIn("candidate_predictions", current)
+                    self.assertNotIn("candidate_patch_sha256", current)
+                    if fail_on == 1:
+                        self.assertNotIn("runtime_source_sha", current)
+                    else:
+                        self.assertEqual(current["runtime_source_sha"], replay_mcp.run(["git", "rev-parse", "HEAD"], replay_mcp.REPO_ROOT).strip())
+                    for name in ("baseline_native.jsonl", "candidate_mcp.jsonl"):
+                        self.assertFalse((root / name).exists())
+                    self.assertFalse(list(root.glob(".replay-report-*")))
+                    self.assert_unrelated_outputs_preserved(root)
+
+    def test_unwritable_report_preserves_previous_complete_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.seed_previous_success(root)
+            previous = {path: path.read_bytes() for path in root.iterdir()}
+            with patch.object(Path, "replace", side_effect=OSError("report unavailable")):
+                with self.assertRaisesRegex(OSError, "report unavailable"):
+                    replay_mcp.main(["--output-dir", str(root)])
+            self.assertEqual({path: path.read_bytes() for path in root.iterdir()}, previous)
 
 
 if __name__ == "__main__":
