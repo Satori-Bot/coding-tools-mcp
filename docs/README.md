@@ -8,7 +8,10 @@ Their source is maintained in:
 
 https://github.com/coding-tools-mcp/docs
 
-Existing user-guide paths in this directory are kept as short compatibility pointers so old GitHub links continue to resolve.
+Existing user-guide paths remain as compatibility pointers with their historical
+section anchors. Current runtime corrections link to the source-coupled
+references below; the local tool journal's storage and security contract also
+remain here.
 
 ## Runtime and protocol reference
 
@@ -19,6 +22,7 @@ These documents stay with the source because tests and releases validate them ag
 - [Runtime contract v0.2](runtime-contract-v0.2.md)
 - [Permission modes](permission-modes.md)
 - [Telemetry](telemetry.md)
+- [Local tool event journal](local-tool-events.md)
 - [Security boundary](security-boundary.md)
 - [Limitations](limitations.md)
 

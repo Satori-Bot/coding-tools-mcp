@@ -127,6 +127,12 @@ Per-workspace profiles, server and tunnel start/stop, credential setup with
 clipboard helpers, live health checks. English and 简体中文. The desktop app is
 versioned and released independently from the core runtime.
 
+If you previously installed `coding-tools-mcp[desktop]`, upgrade the core runtime
+before installing the standalone app above. If the standalone app already
+shares that environment, reinstall it after the core upgrade: the old core
+package owned the same desktop files and command. The new core package no longer
+ships the desktop extra or the `coding-tools-mcp-desktop` command.
+
 **6. Keep an interactive command alive.** `exec_command` starts a REPL or
 debugger under a real PTY; `write_stdin` feeds it across turns; `read_output`
 pages long output; `kill_command` cleans up. Long-running processes are

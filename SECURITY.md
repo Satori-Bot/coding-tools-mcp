@@ -87,6 +87,8 @@ HTTP is intended for local MCP clients:
 - Non-loopback deployment requires external authentication and sandboxing.
 - Browser `Origin` is validated as defense in depth.
 - Logs and optional `CODING_TOOLS_MCP_TRACE=1` JSON traces go to stderr, not stdout.
+- Operators can separately enable a [local metadata-only tool journal](docs/troubleshooting.md#durable-local-tool-events)
+  in a private directory. It is never sent to telemetry and is not a chat archive.
 
 ## Reporting Security Issues
 

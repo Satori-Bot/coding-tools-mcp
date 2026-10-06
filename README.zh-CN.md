@@ -116,6 +116,11 @@ coding-tools-mcp-desktop
 按工作区管理配置、一键启停服务器与隧道、凭证设置带剪贴板助手、实时健康
 检查。支持英文与简体中文。Desktop 与核心 runtime 现在独立版本、独立发布。
 
+如果此前安装的是 `coding-tools-mcp[desktop]`，请先升级核心 runtime，再按
+上面的步骤安装独立桌面应用。如果同一环境中已安装独立桌面应用，请在核心
+升级后重装它：旧核心包拥有相同的桌面文件和命令。新核心包不再提供
+`desktop` extra 或 `coding-tools-mcp-desktop` 命令。
+
 **6. 保持一个活着的交互式命令。**`exec_command` 在真实 PTY 下启动 REPL 或
 调试器；`write_stdin` 跨轮次喂输入；`read_output` 分页读取长输出；
 `kill_command` 干净收尾。长时进程是一等公民，配有命令看门狗与有界缓冲。

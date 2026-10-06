@@ -1,3 +1,5 @@
+<a id="quickstart"></a>
+
 # Quickstart moved
 
 The maintained quickstart now lives in the public documentation repository:
