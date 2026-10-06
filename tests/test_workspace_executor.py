@@ -105,6 +105,20 @@ class WorkspaceExecutorTests(unittest.TestCase):
             executor.spawn_managed(["/bin/true"], cwd=str(self.root), shell=False, env={}, tty=False, popen_kwargs={})
         plain.assert_not_called()
 
+    @unittest.skipIf(os.name == "nt", "POSIX symlink fixture")
+    def test_unresolvable_executable_fails_before_launch(self) -> None:
+        loop = self.root / "loop"
+        loop.symlink_to(loop)
+        executor = self.executor(IsolationConfig(mode="strict"))
+        with patch.object(executor, "_backend") as backend, \
+                patch("coding_tools_mcp.executor.spawn_process") as plain:
+            with self.assertRaises(ToolFailure) as caught:
+                executor.spawn_managed([str(loop)], cwd=str(self.root), shell=False, env={}, tty=False, popen_kwargs={})
+        self.assertEqual(caught.exception.code, "COMMAND_SPAWN_FAILED")
+        self.assertFalse(executor.last_launch_confirmed)
+        backend.assert_not_called()
+        plain.assert_not_called()
+
     def test_strict_text_streams_preserve_popen_contract(self) -> None:
         import sys
         from types import SimpleNamespace

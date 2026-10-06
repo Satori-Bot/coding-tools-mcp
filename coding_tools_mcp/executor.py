@@ -102,7 +102,7 @@ class WorkspaceExecutor:
         if policy.strict:
             try:
                 real = executable.resolve(strict=True)
-            except OSError as exc:
+            except (OSError, RuntimeError, ValueError) as exc:
                 raise ToolFailure("COMMAND_SPAWN_FAILED", "Executable is unavailable.", category="runtime") from exc
             # Read helpers are part of the service, never workspace-selected
             # programs. Arbitrary commands are intentionally allowed inside

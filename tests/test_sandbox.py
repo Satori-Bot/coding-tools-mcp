@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -61,6 +62,95 @@ class SandboxTests(unittest.TestCase):
                 backend.spawn(["/bin/true"], cwd=self.workspace, env={})
             self.assertEqual(caught.exception.code, "SANDBOX_NETWORK_UNSUPPORTED")
             spawn.assert_not_called()
+
+    def test_capability_errors_identify_the_failed_prerequisite(self):
+        cases = (
+            ("linux", "offline", (), None, True, "SANDBOX_UNAVAILABLE"),
+            ("linux", "proxy", ("example.com:443",), None, True, "SANDBOX_UNAVAILABLE"),
+            ("linux", "proxy", ("example.com:443",), self.helper, False, "SANDBOX_UNAVAILABLE"),
+            ("darwin", "proxy", ("example.com:443",), self.helper, True, "SANDBOX_UNAVAILABLE"),
+            ("win32", "proxy", ("example.com:443",), self.helper, True, "SANDBOX_UNAVAILABLE"),
+            ("linux", "proxy", (), self.helper, True, "SANDBOX_NETWORK_UNSUPPORTED"),
+            ("linux", "unknown", (), self.helper, True, "SANDBOX_NETWORK_UNSUPPORTED"),
+        )
+        for platform, network, destinations, helper, installed, expected in cases:
+            with self.subTest(platform=platform, network=network, helper=helper, installed=installed):
+                backend = SandboxBackend(self.spec(network=network, allowed_destinations=destinations, helper_path=helper))
+                backend.platform = platform
+                with patch("coding_tools_mcp.sandbox.platform.machine", return_value="x86_64"), \
+                        patch("coding_tools_mcp.sandbox.Path.is_file", return_value=installed), \
+                        patch("coding_tools_mcp.sandbox.socket.socketpair") as control, \
+                        patch("coding_tools_mcp.sandbox.spawn_process") as spawn:
+                    report = backend.capability_report()
+                    self.assertEqual(report["error_code"], expected)
+                    self.assertFalse(report["strict_supported"])
+                    with self.assertRaises(ToolFailure) as caught:
+                        backend.spawn([str(self.helper)], cwd=self.workspace, env={})
+                    self.assertEqual(caught.exception.code, expected)
+                    self.assertEqual(caught.exception.details["capabilities"], report)
+                    control.assert_not_called()
+                    spawn.assert_not_called()
+
+    def test_unavailable_cwd_is_policy_error_before_setup(self):
+        ordinary_file = self.workspace / "file"
+        ordinary_file.write_text("not a directory")
+        for cwd in (self.workspace / "missing", ordinary_file, self.workspace / "nul\x00path"):
+            with self.subTest(cwd=cwd):
+                backend = SandboxBackend(self.spec())
+                with patch.object(backend, "capability_report", return_value={"reason": None}), \
+                        patch("coding_tools_mcp.sandbox.socket.socketpair") as control, \
+                        patch("coding_tools_mcp.sandbox.spawn_process") as spawn:
+                    with self.assertRaises(ToolFailure) as caught:
+                        backend.spawn([str(self.helper)], cwd=cwd, env={})
+                self.assertEqual(caught.exception.code, "SANDBOX_POLICY_INVALID")
+                self.assertFalse(backend._last_confirmed)
+                control.assert_not_called()
+                spawn.assert_not_called()
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink fixture")
+    def test_symlink_loops_have_domain_errors_before_setup(self):
+        loop = self.base / "loop"
+        loop.symlink_to(loop)
+        with self.assertRaises(ToolFailure) as caught:
+            _canonical_roots((loop,), must_exist=True)
+        self.assertEqual(caught.exception.code, "SANDBOX_POLICY_INVALID")
+        with self.assertRaises(ToolFailure) as caught:
+            SandboxBackend(self.spec(helper_path=loop))._helper_fd(())
+        self.assertEqual(caught.exception.code, "SANDBOX_HELPER_UNTRUSTED")
+        backend = SandboxBackend(self.spec())
+        with patch.object(backend, "capability_report", return_value={"reason": None}), \
+                patch("coding_tools_mcp.sandbox.socket.socketpair") as control:
+            with self.assertRaises(ToolFailure) as caught:
+                backend.spawn([str(self.helper)], cwd=loop, env={})
+        self.assertEqual(caught.exception.code, "SANDBOX_POLICY_INVALID")
+        control.assert_not_called()
+
+    @unittest.skipIf(os.name == "nt", "POSIX control descriptors")
+    def test_interrupted_setup_closes_control_and_pinned_descriptors(self):
+        parent, child = socket.socketpair()
+        self.addCleanup(parent.close)
+        self.addCleanup(child.close)
+        pinned = []
+
+        def interrupted_argv(argv, cwd, control_fd, nonce, fds, reads, writes):
+            descriptor = os.open(self.helper, os.O_RDONLY)
+            pinned.append(descriptor)
+            fds.append(descriptor)
+            raise KeyboardInterrupt
+
+        backend = SandboxBackend(self.spec())
+        with patch.object(backend, "capability_report", return_value={"reason": None}), \
+                patch.object(backend, "_linux_argv", side_effect=interrupted_argv), \
+                patch("coding_tools_mcp.sandbox.socket.socketpair", return_value=(parent, child)), \
+                patch("coding_tools_mcp.sandbox.spawn_process") as spawn:
+            with self.assertRaises(KeyboardInterrupt):
+                backend.spawn([str(self.helper)], cwd=self.workspace, env={})
+        self.assertFalse(backend._last_confirmed)
+        self.assertEqual((parent.fileno(), child.fileno()), (-1, -1))
+        for descriptor in pinned:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+        spawn.assert_not_called()
 
     def test_seatbelt_is_deny_default_offline_and_escaped(self):
         odd = self.base / 'quote" newline\npath'

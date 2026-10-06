@@ -1,6 +1,9 @@
 """Policy compilation tests, not native sandbox acceptance."""
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from argparse import Namespace
@@ -71,6 +74,60 @@ class ExecutionPolicyTests(unittest.TestCase):
         with self.assertRaises(ToolFailure) as caught:
             compile_policy(IsolationConfig(mode="strict", read_roots=(self.root / "missing",)), self.workspace, self.runtime)
         self.assertEqual(caught.exception.code, "INVALID_ARGUMENT")
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink fixture")
+    def test_unresolvable_roots_remain_configuration_errors(self) -> None:
+        loop = self.root / "loop"
+        loop.symlink_to(loop)
+        cases = (
+            (IsolationConfig(mode="strict", read_roots=(loop,)), self.runtime, ()),
+            (IsolationConfig(mode="strict", deny_roots=(loop,)), self.runtime, ()),
+            (IsolationConfig(mode="strict"), loop, ()),
+            (IsolationConfig(mode="strict"), self.runtime, (loop,)),
+        )
+        for config, runtime, writes in cases:
+            with self.subTest(config=config, runtime=runtime, writes=writes), self.assertRaises(ToolFailure) as caught:
+                compile_policy(config, self.workspace, runtime, structured_only=True, write_paths=writes)
+            self.assertEqual(caught.exception.code, "INVALID_ARGUMENT")
+            self.assertEqual(caught.exception.details["path"], str(loop))
+
+    def test_nul_root_is_a_configuration_error(self) -> None:
+        with self.assertRaises(ToolFailure) as caught:
+            compile_policy(IsolationConfig(mode="strict", read_roots=(self.root / "nul\x00root",)), self.workspace, self.runtime)
+        self.assertEqual(caught.exception.code, "INVALID_ARGUMENT")
+
+    def test_unexpandable_cli_or_environment_roots_are_configuration_errors(self) -> None:
+        for name in ("SANDBOX_READ_ROOT", "SANDBOX_DENY_ROOT"):
+            for source in ("cli", "environment"):
+                with self.subTest(name=name, source=source), \
+                        patch.dict(os.environ, {f"CODING_TOOLS_MCP_{name}S": "~/root"}, clear=True), \
+                        patch("coding_tools_mcp.policy.Path.expanduser", side_effect=RuntimeError("Home unavailable")):
+                    args = Namespace(**{name.lower(): ["~/root"]}) if source == "cli" else Namespace()
+                    with self.assertRaises(ToolFailure) as caught:
+                        IsolationConfig.from_args(args)
+                    self.assertEqual(caught.exception.code, "INVALID_ARGUMENT")
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink fixture")
+    def test_cli_rejects_invalid_read_root_without_traceback(self) -> None:
+        loop = self.root / "loop"
+        loop.symlink_to(loop)
+        cases = ((str(loop), "ERROR: INVALID_ARGUMENT:"), ("~coding_tools_missing_user_3fa946a9/root", "ERROR:"))
+        for root, diagnostic in cases:
+            for transport in (("--stdio",), ("--host", "127.0.0.1", "--port", "0")):
+                self._check_invalid_cli_root(root, transport, diagnostic)
+
+    def _check_invalid_cli_root(self, root: str, transport: tuple[str, ...], diagnostic: str) -> None:
+        with self.subTest(root=root, transport=transport):
+            result = subprocess.run(
+                [sys.executable, "-m", "coding_tools_mcp", "--workspace", str(self.workspace),
+                 "--execution-isolation", "strict", "--sandbox-read-root", root, *transport],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=10, env={**os.environ, "CODING_TOOLS_MCP_TELEMETRY": "off"},
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(result.stdout, "")
+            self.assertIn(diagnostic, result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
 
     def test_invalid_cli_configuration_is_reportable_without_traceback(self) -> None:
         from coding_tools_mcp.server import build_parser, runtime_policy_from_args

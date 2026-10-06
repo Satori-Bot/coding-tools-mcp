@@ -53,7 +53,11 @@ class IsolationConfig:
             entries = getattr(args, name.lower(), None)
             if entries is None:
                 entries = [p for p in os.environ.get(prefix + name + "S", "").split(os.pathsep) if p]
-            return tuple(Path(p).expanduser().absolute() for p in entries)
+            try:
+                return tuple(Path(p).expanduser().absolute() for p in entries)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ToolFailure("INVALID_ARGUMENT", f"A configured {name.lower()} path cannot be expanded.",
+                                  category="validation") from exc
 
         helper = value("SANDBOX_HELPER")
         return cls(
@@ -117,26 +121,34 @@ def compile_policy(
 ) -> ExecutionPolicy:
     if purpose not in {"command", "read-helper"}:
         raise ValueError("Unknown process purpose")
-    workspace = workspace.resolve(strict=True)
-    runtime_dir = runtime_dir.resolve(strict=False)
+
+    def resolve_root(root: Path, *, must_exist: bool = False) -> Path:
+        try:
+            return root.resolve(strict=must_exist)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ToolFailure("INVALID_ARGUMENT", "A configured sandbox root cannot be resolved.",
+                              category="validation", details={"path": str(root)}) from exc
+
+    workspace = resolve_root(workspace, must_exist=True)
+    runtime_dir = resolve_root(runtime_dir)
     if runtime_dir.is_relative_to(workspace):
         raise ToolFailure("INVALID_ARGUMENT", "Command runtime state must live outside the workspace.", category="security")
     try:
-        read_roots = (workspace, *system_read_roots(), *(p.resolve(strict=True) for p in config.read_roots))
-    except OSError as exc:
+        read_roots = (workspace, *system_read_roots(), *(resolve_root(p, must_exist=True) for p in config.read_roots))
+    except (OSError, RuntimeError, ValueError) as exc:
         raise ToolFailure("INVALID_ARGUMENT", "A configured sandbox read root is unavailable.", category="validation") from exc
     write_roots = (runtime_dir,)
     if purpose == "command":
         write_roots += write_paths if structured_only else (workspace,)
     helper_roots = (config.helper_path.parent,) if config.helper_path is not None else ()
-    deny_roots = tuple(dict.fromkeys(p.resolve(strict=False) for p in (*config.deny_roots, *service_roots, *helper_roots)))
+    deny_roots = tuple(dict.fromkeys(resolve_root(p) for p in (*config.deny_roots, *service_roots, *helper_roots)))
     for root in deny_roots:
         if workspace.is_relative_to(root) or runtime_dir.is_relative_to(root):
             raise ToolFailure("INVALID_ARGUMENT", "A denied root contains the workspace or command runtime.", category="security")
     return ExecutionPolicy(
         workspace=workspace,
         read_roots=tuple(dict.fromkeys(read_roots)),
-        write_roots=tuple(dict.fromkeys(p.resolve(strict=False) for p in write_roots)),
+        write_roots=tuple(dict.fromkeys(resolve_root(p) for p in write_roots)),
         deny_roots=deny_roots,
         mode=config.mode,
         network="offline" if purpose == "read-helper" else config.network,

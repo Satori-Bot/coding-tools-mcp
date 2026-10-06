@@ -82,6 +82,13 @@ allowlist), `SANDBOX_HELPER_UNTRUSTED` (installation or hash validation),
 `SANDBOX_INITIALIZATION_FAILED` (restriction installation or startup protocol).
 Use the error details to fix the prerequisite; do not disable isolation as an
 automatic recovery path.
+An unavailable capability report includes the same `error_code` used when
+launch is rejected. An unconfigured helper, missing bubblewrap installation,
+or unsupported platform is `SANDBOX_UNAVAILABLE` even when proxy networking was requested;
+`SANDBOX_NETWORK_UNSUPPORTED` identifies a network configuration failure.
+Unresolvable configured roots are configuration errors. A missing, looping,
+or non-directory command working directory is `SANDBOX_POLICY_INVALID` and is
+rejected before allocating the native control channel or starting the proxy.
 
 Before enabling strict mode:
 

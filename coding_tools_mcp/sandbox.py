@@ -64,7 +64,7 @@ def _canonical_roots(roots: tuple[Path, ...], *, must_exist: bool) -> tuple[Path
             raise _failure("SANDBOX_POLICY_INVALID", "Sandbox roots must be absolute.")
         try:
             target = root.resolve(strict=must_exist)
-        except OSError as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             raise _failure("SANDBOX_POLICY_INVALID", f"Sandbox root is unavailable: {root}") from exc
         if target != root:
             raise _failure("SANDBOX_POLICY_INVALID", "Sandbox roots must be canonical and must not change to symbolic links.")
@@ -170,10 +170,13 @@ class SandboxBackend:
         linux = self.platform.startswith("linux")
         backend = "linux-bwrap" if linux else "macos-seatbelt" if self.platform == "darwin" else "windows-native" if self.platform == "win32" else "unsupported"
         reason = None
+        error_code = "SANDBOX_UNAVAILABLE"
         if self.spec.network not in {"offline", "proxy"}:
             reason = "Unknown sandbox network mode."
+            error_code = "SANDBOX_NETWORK_UNSUPPORTED"
         elif self.spec.network == "proxy" and not self.spec.allowed_destinations:
             reason = "Proxy mode requires an explicit destination host:port allowlist."
+            error_code = "SANDBOX_NETWORK_UNSUPPORTED"
         elif self.platform == "darwin":
             reason = "Seatbelt descendant cleanup is not guaranteed for setsid/double-fork processes."
         elif not linux:
@@ -191,6 +194,7 @@ class SandboxBackend:
             "strict_supported": reason is None,
             "availability": "unprobed" if reason is None else "unavailable",
             "reason": reason,
+            "error_code": error_code if reason is not None else None,
             "filesystem_isolation": linux,
             "offline_network_isolation": linux,
             "descendant_cleanup": linux,
@@ -201,15 +205,20 @@ class SandboxBackend:
     def _validate(self, argv: list[str], cwd: Path) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
         report = self.capability_report()
         if report["reason"]:
-            code = "SANDBOX_NETWORK_UNSUPPORTED" if self.spec.network != "offline" else "SANDBOX_UNAVAILABLE"
-            raise _failure(code, report["reason"], capabilities=report)
+            raise _failure(report["error_code"], report["reason"], capabilities=report)
         if not argv or not Path(argv[0]).is_absolute():
             raise _failure("SANDBOX_POLICY_INVALID", "Strict execution requires an absolute executable path.")
         workspace = _canonical_roots((self.spec.workspace,), must_exist=True)[0]
         reads = _canonical_roots((workspace, *self.spec.read_roots), must_exist=True)
         writes = _canonical_roots(self.spec.write_roots, must_exist=True)
         denies = _canonical_roots(self.spec.deny_roots, must_exist=False)
-        if not _beneath(cwd.resolve(strict=True), reads + writes) or _beneath(cwd.resolve(strict=True), denies):
+        try:
+            resolved_cwd = cwd.resolve(strict=True)
+            if not resolved_cwd.is_dir():
+                raise _failure("SANDBOX_POLICY_INVALID", "Command cwd is not a directory.", cwd=str(cwd))
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise _failure("SANDBOX_POLICY_INVALID", "Command cwd cannot be resolved.", cwd=str(cwd)) from exc
+        if not _beneath(resolved_cwd, reads + writes) or _beneath(resolved_cwd, denies):
             raise _failure("SANDBOX_POLICY_INVALID", "Command cwd is outside the permitted roots.")
         for root in reads + writes:
             if _beneath(root, _RESERVED_ROOTS):
@@ -235,7 +244,7 @@ class SandboxBackend:
             if info.st_nlink != 1 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) or info.st_uid not in (0, os.geteuid()):
                 os.close(fd)
                 raise _failure("SANDBOX_HELPER_UNTRUSTED", "Native helper must be an unshared, trusted inode.")
-        except OSError as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             raise _failure("SANDBOX_HELPER_UNTRUSTED", "Native helper is unavailable or its path changed.") from exc
         try:
             with os.fdopen(os.dup(fd), "rb") as source:
