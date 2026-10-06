@@ -134,13 +134,26 @@ def seatbelt_profile(spec: SandboxSpec) -> str:
         '(allow file-read-metadata (literal "/"))',
         '(allow file-read* file-write-data (literal "/dev/null"))',
         '(allow file-read* (literal "/dev/urandom"))',
+        # Loader/CPython platform metadata only; this grants no Mach service,
+        # host network, or additional file-content access.
+        '(allow sysctl-read (sysctl-name "hw.machine") (sysctl-name "hw.ncpu") '
+        '(sysctl-name "hw.pagesize") (sysctl-name "kern.ostype") '
+        '(sysctl-name "kern.osrelease") (sysctl-name "kern.osversion") '
+        '(sysctl-name "kern.osproductversion") (sysctl-name "kern.version") '
+        '(sysctl-name "kern.argmax"))',
     ]
     for root in dict.fromkeys((*reads, *writes)):
-        lines.append(f"(allow file-read* (subpath {json.dumps(str(root))}))")
+        encoded = json.dumps(str(root))
+        lines.append(f"(allow file-read* (subpath {encoded}))")
+        # Executable mappings are a separate Seatbelt operation from reads.
+        # Required for the dynamic loader and Python extension modules; scope
+        # remains exactly the already-authorized executable/read tree.
+        lines.append(f"(allow file-map-executable (subpath {encoded}))")
+        lines.append(f"(allow file-read-metadata (path-ancestors {encoded}))")
     for root in writes:
         lines.append(f"(allow file-write* (subpath {json.dumps(str(root))}))")
     for root in denies:
-        lines.append(f"(deny file-read* file-write* (subpath {json.dumps(str(root))}))")
+        lines.append(f"(deny file-read* file-write* file-map-executable (subpath {json.dumps(str(root))}))")
     return "\n".join(lines) + "\n"
 
 
@@ -234,15 +247,15 @@ class SandboxBackend:
             raise
 
     def _bwrap(self, writes: tuple[Path, ...]) -> Path:
-        executable = Path("/usr/bin/bwrap").resolve(strict=True)
-        _trusted_install(executable, writes, root_owned=True)
         try:
+            executable = Path("/usr/bin/bwrap").resolve(strict=True)
+            _trusted_install(executable, writes, root_owned=True)
             check = subprocess.run([str(executable), "--version"], cwd="/", env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"}, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3, check=True)
             version = re.fullmatch(rb"bubblewrap (\d+)\.(\d+)\.(\d+)\s*", check.stdout)
             if version is None or tuple(map(int, version.groups())) < MIN_BWRAP_VERSION:
                 raise _failure("SANDBOX_UNAVAILABLE", "bubblewrap >= 0.12.0 with fd-pinned mounts is required.")
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise _failure("SANDBOX_UNAVAILABLE", "Trusted bubblewrap version probe failed.") from exc
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            raise _failure("SANDBOX_UNAVAILABLE", "Trusted bubblewrap is missing or its version probe failed.") from exc
         return executable
 
     def _linux_argv(self, argv: list[str], cwd: Path, control_fd: int, nonce: str, fds: list[int], reads: tuple[Path, ...], writes: tuple[Path, ...], proxy_socket: Path | None = None) -> list[str]:
@@ -346,10 +359,16 @@ class SandboxBackend:
             if proxy is not None:
                 proxy.close()
             if process is not None:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                if process.poll() is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except PermissionError:
+                        # A short-lived process can already be exiting on
+                        # Darwin. Popen.kill rechecks child state before the
+                        # direct-PID fallback; never signal another group.
+                        process.kill()
                 try:
                     process.wait(timeout=3)
                 except subprocess.TimeoutExpired:

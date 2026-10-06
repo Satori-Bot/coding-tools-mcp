@@ -27,14 +27,16 @@ jobs:
           - platform: Linux
             os: ubuntu-22.04
             scope: native isolation
+            helper_root: /var/lib/coding-tools-mcp
           - platform: macOS
             os: macos-14
+            helper_root: /private/var/lib/coding-tools-mcp
             scope: native capability rejection
     env:
       # Linux must enforce its advertised native capabilities. On macOS the
       # gate must exercise explicit strict-mode rejection, not claim support.
       CODING_TOOLS_SANDBOX_REQUIRE_NATIVE: '1'
-      CODING_TOOLS_SANDBOX_HELPER: /opt/coding-tools-mcp/bin/coding-tools-sandbox-helper
+      CODING_TOOLS_SANDBOX_HELPER: ${{ matrix.helper_root }}/bin/coding-tools-sandbox-helper
     steps:
       - uses: actions/checkout@v6.0.2
         with:
@@ -75,8 +77,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo mkdir -p /opt/coding-tools-mcp/bin
-          sudo chmod 0755 /opt/coding-tools-mcp /opt/coding-tools-mcp/bin
+          helper_dir="$(dirname "$CODING_TOOLS_SANDBOX_HELPER")"
+          sudo install -d -m 0755 "${helper_dir%/bin}" "$helper_dir"
           sudo install -m 0755 native/sandbox-helper/target/release/coding-tools-sandbox-helper "$CODING_TOOLS_SANDBOX_HELPER"
           python -c 'import hashlib, os; p = os.environ["CODING_TOOLS_SANDBOX_HELPER"]; print("helper_sha256=" + hashlib.sha256(open(p, "rb").read()).hexdigest())' | tee helper-version.txt
       - name: Exercise native capabilities without silent skips

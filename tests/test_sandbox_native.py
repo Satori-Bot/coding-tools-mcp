@@ -524,8 +524,22 @@ for family,kind,host,port in {endpoints!r}:
     else: raise AssertionError('Seatbelt network escape')
 print('profile file/network checks passed; strict lifecycle not supported')
 """
-            completed = subprocess.run([str(self.launcher), "-p", seatbelt_profile(spec), str(Path(sys.executable).resolve()), "-c", code], cwd=workspace, env={"PATH": "/usr/bin:/bin", "HOME": str(workspace), "TMPDIR": str(workspace)}, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False)
-            self.assertEqual(completed.returncode, 0, completed.stderr.decode(errors="replace"))
+            profile = seatbelt_profile(spec)
+            interpreter = str(Path(sys.executable).resolve())
+            environment = {"PATH": "/usr/bin:/bin", "HOME": str(workspace), "TMPDIR": str(workspace)}
+            completed = subprocess.run([str(self.launcher), "-p", profile, interpreter, "-c", code], cwd=workspace, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False)
+            diagnostic = ""
+            if completed.returncode != 0:
+                # Only read-only/no-op probes; neither relaxes the tested
+                # profile nor turns an unavailable platform into a skip.
+                bootstrap = []
+                for label, argv in (("system true", ["/usr/bin/true"]), ("Python startup", [interpreter, "-c", "pass"])):
+                    probe = subprocess.run([str(self.launcher), "-p", profile, *argv], cwd=workspace, env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, check=False)
+                    bootstrap.append(f"{label}: returncode={probe.returncode}, stdout={probe.stdout!r}, stderr={probe.stderr!r}")
+                diagnostic = (f"Seatbelt fixture returncode={completed.returncode}; interpreter={interpreter}\n"
+                              f"stdout={completed.stdout!r}\nstderr={completed.stderr!r}\n"
+                              + "\n".join(bootstrap) + "\nProfile:\n" + profile)
+            self.assertEqual(completed.returncode, 0, diagnostic)
             self.assertIn(b"profile file/network checks passed", completed.stdout)
             self.assertEqual((workspace / "allowed").read_text(), "ok")
             self.assertEqual(outside.read_text(), "private")

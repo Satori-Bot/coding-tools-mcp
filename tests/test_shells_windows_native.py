@@ -103,12 +103,19 @@ class NativeWindowsShellTests(unittest.TestCase):
         installation.mkdir()
         fake = installation / "pwsh.exe"
         shutil.copyfile(sys.executable, fake)
+        # Windows runner TEMP may use an 8.3 ancestor spelling. Resolve the
+        # fixture before validation so canonical-path rejection cannot mask
+        # the DACL rejection this acceptance test is intended to exercise.
+        installation = installation.resolve(strict=True)
+        fake = fake.resolve(strict=True)
         _, system_directory = shells._native_installation_paths()
         # Exercise real Windows DACL inspection using a deliberately unsafe
         # test root, rather than claiming mocked ACL decisions are acceptance.
-        with self.assertRaises(ToolFailure) as failure:
-            shells.validate_windows_executable(str(fake), workspace=str(self.workspace), kind="pwsh",
-                installation_paths=((str(installation),), system_directory))
+        with patch.object(shells, "_protected_windows_acl", wraps=shells._protected_windows_acl) as inspect_acl:
+            with self.assertRaises(ToolFailure) as failure:
+                shells.validate_windows_executable(str(fake), workspace=str(self.workspace), kind="pwsh",
+                    installation_paths=((str(installation),), system_directory))
+        inspect_acl.assert_any_call(str(fake), executable_directory=False)
         self.assertEqual(failure.exception.code, "SHELL_UNTRUSTED")
         self.assertIn("replaced", failure.exception.message)
 

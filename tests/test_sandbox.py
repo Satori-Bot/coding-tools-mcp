@@ -69,6 +69,8 @@ class SandboxTests(unittest.TestCase):
         self.assertIn("(deny network*)", profile)
         self.assertIn('quote\\" newline\\npath', profile)
         self.assertNotIn("(allow network", profile)
+        self.assertNotIn("(allow mach-lookup", profile)
+        self.assertIn("(allow file-map-executable (subpath", profile)
         self.assertIn("(deny file-read* file-write*", profile)
 
     def test_root_grant_rejected(self):
@@ -114,7 +116,9 @@ class SandboxTests(unittest.TestCase):
         # inherited control descriptor and must not be accepted as isolated.
         def fake_argv(argv, cwd, control_fd, nonce, fds, reads, writes):
             return ["/bin/sh", "-c", f"printf 'CTMCP_SANDBOX {PROTOCOL_VERSION} {HELPER_VERSION} linux-bwrap {nonce}\\n'"]
-        with patch.object(backend, "_linux_argv", side_effect=fake_argv), patch.object(backend, "capability_report", return_value={"reason": None}):
+        with patch.object(backend, "_linux_argv", side_effect=fake_argv), patch.object(backend, "capability_report", return_value={"reason": None}), patch("coding_tools_mcp.sandbox.os.killpg"):
+            # The short-lived spoof fixture is not a namespace process tree.
+            # Never signal a real process group from this protocol unit test.
             with self.assertRaises(ToolFailure) as caught:
                 backend.spawn(["/bin/true"], cwd=self.workspace, env={})
         self.assertEqual(caught.exception.code, "SANDBOX_INITIALIZATION_FAILED")
@@ -134,7 +138,9 @@ class SandboxTests(unittest.TestCase):
         import sys
         def fake_argv(argv, cwd, control_fd, nonce, fds, reads, writes):
             return [sys.executable, "-c", code, str(control_fd), nonce, str(marker)]
-        with patch.object(backend, "_linux_argv", side_effect=fake_argv), patch.object(backend, "capability_report", return_value={"reason": None}):
+        with patch.object(backend, "_linux_argv", side_effect=fake_argv), patch.object(backend, "capability_report", return_value={"reason": None}), patch("coding_tools_mcp.sandbox.os.killpg"):
+            # The short-lived spoof fixture is not a namespace process tree.
+            # Never signal a real process group from this protocol unit test.
             with self.assertRaises(ToolFailure):
                 backend.spawn(["/bin/true"], cwd=self.workspace, env={})
         self.assertFalse(marker.exists())
@@ -142,10 +148,17 @@ class SandboxTests(unittest.TestCase):
     @unittest.skipUnless(__import__("sys").platform.startswith("linux"), "Linux version probe")
     def test_old_bwrap_is_rejected(self):
         backend = SandboxBackend(self.spec())
-        with patch("coding_tools_mcp.sandbox._trusted_install"), patch("coding_tools_mcp.sandbox.subprocess.run", return_value=subprocess.CompletedProcess([], 0, b"bubblewrap 0.9.0\n", b"")):
+        with patch("coding_tools_mcp.sandbox.Path.resolve", return_value=self.helper), patch("coding_tools_mcp.sandbox._trusted_install"), patch("coding_tools_mcp.sandbox.subprocess.run", return_value=subprocess.CompletedProcess([], 0, b"bubblewrap 0.9.0\n", b"")):
             with self.assertRaises(ToolFailure) as caught:
                 backend._bwrap(())
         self.assertIn("0.12.0", caught.exception.message)
+
+    def test_missing_bwrap_raises_domain_failure(self):
+        backend = SandboxBackend(self.spec())
+        with patch("coding_tools_mcp.sandbox.Path.resolve", side_effect=FileNotFoundError("missing bwrap")):
+            with self.assertRaises(ToolFailure) as caught:
+                backend._bwrap(())
+        self.assertEqual(caught.exception.code, "SANDBOX_UNAVAILABLE")
 
     def test_nested_denies_rejected_even_for_readonly_roots(self):
         secret = self.workspace / "credential"
