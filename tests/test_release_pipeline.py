@@ -447,8 +447,8 @@ class CrossPlatformSandboxWorkflowTests(unittest.TestCase):
         self.assertEqual(events["push"], {"branches": ["main"]})
         source_ref = events["workflow_call"]["inputs"]["source_ref"]
         self.assertEqual(source_ref["type"], "string")
-        self.assertFalse(source_ref["required"])
-        self.assertEqual(source_ref["default"], "")
+        self.assertTrue(source_ref["required"])
+        self.assertNotIn("default", source_ref)
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})
         for job_name, job in self.jobs.items():
             with self.subTest(job=job_name):
@@ -457,7 +457,7 @@ class CrossPlatformSandboxWorkflowTests(unittest.TestCase):
                 checkouts = [step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@")]
                 self.assertTrue(checkouts)
                 for checkout in checkouts:
-                    self.assertEqual(checkout["with"]["ref"], "${{ inputs.source_ref || github.sha }}")
+                    self.assertEqual(checkout["with"]["ref"], "${{ inputs.source_ref || github.event.pull_request.head.sha || github.sha }}")
                     self.assertFalse(checkout["with"]["persist-credentials"])
                 for step in job["steps"]:
                     self.assertNotIn("continue-on-error", step)

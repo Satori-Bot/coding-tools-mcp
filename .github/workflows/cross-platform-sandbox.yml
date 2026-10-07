@@ -5,13 +5,17 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact source commit SHA to verify (defaults to the selected ref's commit)
+        type: string
+        required: false
   workflow_call:
     inputs:
       source_ref:
-        description: Immutable release commit; defaults to triggering revision
+        description: Exact source commit SHA to verify before release
         type: string
-        required: false
-        default: ""
+        required: true
 
 permissions:
   contents: read
@@ -19,6 +23,7 @@ permissions:
 env:
   CODING_TOOLS_MCP_TELEMETRY: 'off'
   PYTHONIOENCODING: utf-8
+  SANDBOX_SOURCE_SHA: ${{ inputs.source_ref || github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   native-posix:
@@ -54,11 +59,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
         with:
-          ref: ${{ inputs.source_ref || github.sha }}
+          ref: ${{ inputs.source_ref || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: '3.11'
+      - name: Require and record the exact source commit
+        run: python -c 'import os, re, subprocess; from pathlib import Path; expected = os.environ["SANDBOX_SOURCE_SHA"]; actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(); assert re.fullmatch("[0-9a-f]{40}", expected), "source_ref must be an immutable commit SHA"; assert actual == expected, (actual, expected); Path("source-revision.txt").write_text(actual + "\n", encoding="utf-8"); print(actual)'
       - name: Record and require the native runner architecture
         env:
           EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
@@ -83,6 +90,11 @@ jobs:
           /usr/bin/bwrap --version | tee backend-version.txt
       - name: Install Python runtime
         run: python -m pip install -e .
+      - name: Require native Git helper security and workspace execution regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_git_helper_security tests.test_workspace_executor 2>&1 | tee git-helper-results.txt
       - name: Build and test the pinned helper source
         shell: bash
         working-directory: native/sandbox-helper
@@ -123,6 +135,8 @@ jobs:
         with:
           name: sandbox-${{ matrix.platform }}
           path: |
+            source-revision.txt
+            git-helper-results.txt
             helper-tests.txt
             helper-version.txt
             backend-version.txt
@@ -149,13 +163,20 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
         with:
-          ref: ${{ inputs.source_ref || github.sha }}
+          ref: ${{ inputs.source_ref || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: '3.11'
+      - name: Require and record the exact source commit
+        run: python -c 'import os, re, subprocess; from pathlib import Path; expected = os.environ["SANDBOX_SOURCE_SHA"]; actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(); assert re.fullmatch("[0-9a-f]{40}", expected), "source_ref must be an immutable commit SHA"; assert actual == expected, (actual, expected); Path("source-revision.txt").write_text(actual + "\n", encoding="utf-8"); print(actual)'
       - name: Install Python runtime
         run: python -m pip install -e .
+      - name: Require native Git helper security and workspace execution regressions
+        shell: pwsh
+        run: |
+          python -m unittest -v tests.test_git_helper_security tests.test_workspace_executor 2>&1 | Tee-Object git-helper-results.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Require PowerShell 7 for its dedicated group
         if: matrix.shell == 'pwsh'
         shell: pwsh
@@ -191,6 +212,8 @@ jobs:
         with:
           name: sandbox-Windows-${{ matrix.shell }}
           path: |
+            source-revision.txt
+            git-helper-results.txt
             windows-shell-results.txt
             windows-rejection-results.txt
             windows-job-results.txt

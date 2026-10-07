@@ -11,14 +11,20 @@ configuration semantics, including the documented limitations of optional
 Landlock enforcement. Enabling strict execution is an explicit deployment
 choice, separate from `--permission-mode` and `--workspace-mutation`.
 
-Compatibility Git helpers retain Git's default system configuration and honor
-`GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`, and `GIT_CONFIG_NOSYSTEM` when selected
-by the server's shell-environment policy. This preserves administrator-provided
-`safe.directory` trust, includes, and global overrides without adding new trust
-entries. Missing trust or invalid/unreadable configuration still produces Git's
-failure. Executable helper mechanisms (hooks, fsmonitor, external diff, textconv,
-and search preprocessors) remain disabled. Strict helpers continue to ignore
-system and global Git configuration.
+Read-only Git helpers create a private, per-launch configuration view. Includes
+are expanded once, filter drivers are removed, and submodule dirty checks are
+disabled so clean/process filters and nested repository helpers cannot become
+implicit command execution. Hooks, fsmonitor, external diff, textconv, and search
+preprocessors remain disabled. The view lives only until that helper exits;
+mutable repository configuration cannot introduce new filter drivers during
+the launch.
+
+Compatibility helpers preserve protected system/global configuration and honor
+`GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`, and `GIT_CONFIG_NOSYSTEM` selected by
+the server's shell-environment policy. Administrator-provided `safe.directory`
+trust and expanded includes retain their original protected scopes; no new trust
+entries are added. Missing trust or invalid/unreadable configuration still fails.
+Strict helpers continue to ignore system and global Git configuration.
 
 ### Configuration
 
@@ -349,7 +355,11 @@ operator-owned and are not performed by this package.
 ## Native acceptance and evidence
 
 The [native workflow](../.github/workflows/cross-platform-sandbox.yml) runs on
-pull requests. A workflow definition is not a passing run. Record the commit,
+pull requests and as a required reusable gate of the
+[release workflow](../.github/workflows/release.yml). Release builds and all
+publishing jobs wait for native acceptance of the release plan's immutable source commit;
+each native runner verifies and records that SHA before testing. A workflow
+definition is not a passing run. Record the commit,
 native runner/OS, backend and helper version, executed test names, failures,
 and skips before claiming a platform is accepted. Linux mock tests cannot
 substitute for native Windows or macOS results.

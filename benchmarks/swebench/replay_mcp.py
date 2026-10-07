@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,23 @@ def line_edit(content: str, revision: str) -> dict[str, Any]:
                                     "content": NEW_ENTRY}]}]}
 
 
+def verify_execution(call: Callable[[str, dict[str, Any]], dict[str, Any]], execution: dict[str, Any]) -> None:
+    """Check the final exit code against output from every incremental response."""
+    stdout = [str(execution.get("stdout", ""))]
+    stderr = [str(execution.get("stderr", ""))]
+    deadline = time.monotonic() + 65
+    while execution.get("exit_code") is None and execution.get("status") in {"running", "queued"}:
+        if time.monotonic() > deadline:
+            raise RuntimeError("MCP verification command timed out")
+        execution = call("write_stdin", {"command_id": execution["command_id"], "chars": "", "yield_time_ms": 1000})
+        stdout.append(str(execution.get("stdout", "")))
+        stderr.append(str(execution.get("stderr", "")))
+    output = "".join(stdout)
+    if execution.get("exit_code") != 0 or "syntax-ok" not in output:
+        evidence = {**execution, "stdout": output, "stderr": "".join(stderr)}
+        raise RuntimeError(f"MCP exec verification failed: {evidence!r}")
+
+
 def replay(workspace: Path, expected_content: str, raw_dir: Path, calls: list[dict[str, Any]]) -> str:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -130,13 +148,7 @@ def replay(workspace: Path, expected_content: str, raw_dir: Path, calls: list[di
             execution = call("exec_command", {"cmd": f"git diff --check && {shlex.quote(sys.executable)} -c {shlex.quote(script)}",
                                                "workdir": ".", "timeout_ms": 60000, "yield_time_ms": 1000,
                                                "max_output_bytes": 8192})
-            deadline = time.monotonic() + 65
-            while execution.get("exit_code") is None and execution.get("status") in {"running", "queued"}:
-                if time.monotonic() > deadline:
-                    raise RuntimeError("MCP verification command timed out")
-                execution = call("write_stdin", {"command_id": execution["command_id"], "chars": "", "yield_time_ms": 1000})
-            if execution.get("exit_code") != 0 or "syntax-ok" not in str(execution.get("stdout", "")):
-                raise RuntimeError(f"MCP exec verification failed: {execution!r}")
+            verify_execution(call, execution)
             return patch
         finally:
             server.terminate()
