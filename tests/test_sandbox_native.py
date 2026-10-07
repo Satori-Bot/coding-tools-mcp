@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import signal
 import shutil
 import socket
@@ -18,6 +19,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -44,6 +46,165 @@ def stop(process: subprocess.Popen[bytes]) -> None:
     except ProcessLookupError:
         pass
     process.communicate(timeout=5)
+
+
+# DNS is a real wire-format query. The QUIC probe exercises its UDP transport
+# with an Initial-shaped datagram; no QUIC handshake or public DNS is required.
+_DATAGRAM_PROBES = (
+    ("UDP", b"native direct UDP probe"),
+    ("DNS-wire", bytes.fromhex("123401000001000000000000076578616d706c6503636f6d0000010001")),
+    ("QUIC-UDP", b"\xc0\x00\x00\x00\x01\x08ctmcp-id\x00\x00\x44\x9e" + bytes(1182)),
+)
+
+
+class _LoopbackEchoFixture:
+    """Keep every TCP/UDP destination live throughout a native boundary test.
+
+    Both IP families must work: a missing IPv6 host baseline fails, rather than
+    being mistaken for enforced denial. Receipt counters also catch packets
+    that escaped but whose response was blocked or never read by the command.
+    """
+
+    def __init__(self, case: unittest.TestCase):
+        self.case = case
+        self.endpoints = []
+        self._servers = []
+        self._connections = set()
+        self._workers = []
+        self._lock = threading.Lock()
+        self._stopped = threading.Event()
+        self._received = []
+        case.addCleanup(self.close)
+        for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+            for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+                listener = socket.socket(family, kind)
+                self._servers.append(listener)
+                listener.settimeout(.1)
+                listener.bind((host, 0))
+                if kind == socket.SOCK_STREAM:
+                    listener.listen()
+                index = len(self.endpoints)
+                self.endpoints.append((int(family), int(kind), host, listener.getsockname()[1]))
+                self._received.append([0, 0])  # accepted connections, received bytes
+                worker = threading.Thread(target=self._serve, args=(index, listener, kind), daemon=True)
+                self._workers.append(worker)
+                worker.start()
+        self.assert_reachable()
+
+    def _serve(self, index, listener, kind):
+        while not self._stopped.is_set():
+            try:
+                if kind == socket.SOCK_DGRAM:
+                    data, address = listener.recvfrom(65535)
+                    with self._lock:
+                        self._received[index][1] += len(data)
+                    listener.sendto(data, address)
+                else:
+                    stream, _ = listener.accept()
+                    stream.settimeout(.1)
+                    with self._lock:
+                        self._received[index][0] += 1
+                        self._connections.add(stream)
+                    worker = threading.Thread(target=self._echo_tcp, args=(index, stream), daemon=True)
+                    with self._lock:
+                        self._workers.append(worker)
+                    worker.start()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+
+    def _echo_tcp(self, index, stream):
+        try:
+            with stream:
+                while not self._stopped.is_set():
+                    try:
+                        data = stream.recv(65535)
+                    except socket.timeout:
+                        continue
+                    if not data:
+                        return
+                    with self._lock:
+                        self._received[index][1] += len(data)
+                    stream.sendall(data)
+        except OSError:
+            pass
+        finally:
+            with self._lock:
+                self._connections.discard(stream)
+
+    def snapshot(self):
+        with self._lock:
+            return [tuple(counts) for counts in self._received]
+
+    def assert_reachable(self):
+        increments = []
+        for family, kind, host, port in self.endpoints:
+            probes = (("TCP", b"host TCP baseline"),) if kind == socket.SOCK_STREAM else _DATAGRAM_PROBES
+            for label, payload in probes:
+                with self.case.subTest(baseline=label, host=host, port=port):
+                    with socket.socket(family, kind) as client:
+                        client.settimeout(3)
+                        client.connect((host, port))
+                        client.sendall(payload)
+                        response = client.recv(65535)
+                        while kind == socket.SOCK_STREAM and len(response) < len(payload):
+                            part = client.recv(65535)
+                            self.case.assertTrue(part, "Host TCP fixture closed before echoing the baseline")
+                            response += part
+                        self.case.assertEqual(response, payload)
+            increments.append((int(kind == socket.SOCK_STREAM), sum(len(payload) for _, payload in probes)))
+        return increments
+
+    def assert_received_only(self, expected, message):
+        # A fresh acknowledged exchange keeps every endpoint live and drains
+        # earlier datagrams/accepts before checking counters. A queued one-way
+        # leak cannot evade the observation by racing the final snapshot.
+        baselines = self.assert_reachable()
+        expected = [(connections + baseline_connections, received + baseline_bytes)
+                    for (connections, received), (baseline_connections, baseline_bytes)
+                    in zip(expected, baselines)]
+        self.case.assertEqual(self.snapshot(), expected, message)
+
+    def close(self):
+        self._stopped.set()
+        for listener in self._servers:
+            listener.close()
+        with self._lock:
+            streams = list(self._connections)
+            workers = list(self._workers)
+        for stream in streams:
+            try:
+                stream.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            stream.close()
+        for worker in workers:
+            worker.join(timeout=1)
+
+
+def _direct_network_probes(endpoints, *, offline=False):
+    """Python run inside the actual sandbox, bypassing any proxy env handling."""
+    denied_error = "PermissionError" if offline else "OSError"
+    return f"""
+import socket
+for family, kind, host, port in {endpoints!r}:
+    probes = [('TCP', b'native direct TCP probe')] if kind == socket.SOCK_STREAM else {list(_DATAGRAM_PROBES)!r}
+    for label, payload in probes:
+        try:
+            with socket.socket(family, kind) as direct:
+                direct.settimeout(.3)
+                direct.connect((host, port))
+                direct.sendall(payload)
+                response = direct.recv(65535)
+        except {denied_error}: pass
+        else:
+            assert not {offline!r}, 'offline socket creation was allowed'
+            assert response != payload, (label, host, port, 'direct socket bypass')
+# A loopback TCP port can coincidentally equal the namespace-local relay port.
+# A relay rejection is harmless; the host fixture also asserts that it received
+# no direct connections or bytes, including one-way UDP/DNS/QUIC leaks.
+"""
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux seccomp helper tests")
@@ -214,89 +375,19 @@ assert not private.exists()
         self.run_code("import os\nleaks=[]\nfor n in os.listdir('/proc/self/fd'):\n if int(n)>2:\n  try: leaks.append(os.readlink('/proc/self/fd/'+n))\n  except FileNotFoundError: pass\nassert not leaks,leaks")
 
     def test_real_ipv4_ipv6_tcp_udp_dns_loopback_denial(self):
-        # Every test destination is proven reachable outside the sandbox first.
-        # DNS uses a local UDP DNS-wire fixture to avoid internet/flaky resolvers.
-        listeners = []
-        endpoints = []
-        threads = []
-        for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-            for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
-                listener = socket.socket(family, kind)
-                listener.settimeout(5)
-                self.addCleanup(listener.close)
-                listener.bind((host, 0))
-                if kind == socket.SOCK_STREAM:
-                    listener.listen()
-                    def echo_tcp(server=listener):
-                        connection, _ = server.accept()
-                        with connection:
-                            connection.sendall(connection.recv(512))
-                    worker = threading.Thread(target=echo_tcp)
-                else:
-                    def echo_udp(server=listener):
-                        data, address = server.recvfrom(512)
-                        server.sendto(data, address)
-                    worker = threading.Thread(target=echo_udp)
-                worker.start()
-                threads.append(worker)
-                address = listener.getsockname()
-                with socket.socket(family, kind) as client:
-                    client.settimeout(3)
-                    client.connect(address)
-                    payload = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01"
-                    client.sendall(payload)
-                    self.assertEqual(client.recv(512), payload)
-                worker.join(timeout=5)
-                endpoints.append((int(family), int(kind), host, address[1]))
-                listeners.append(listener)
-        code = f"""
-import socket
-for family, kind, host, port in {endpoints!r}:
-    try:
-        with socket.socket(family, kind) as stream:
-            stream.settimeout(1)
-            stream.connect((host, port))
-            stream.send(b'\\x12\\x34\\x01\\x00')
-    except PermissionError: pass
-    else: raise AssertionError('direct socket bypass')
-"""
-        self.run_code(code)
+        fixture = _LoopbackEchoFixture(self)
+        before = fixture.snapshot()
+        self.run_code(_direct_network_probes(fixture.endpoints, offline=True))
+        fixture.assert_received_only(before, "Offline command reached a host endpoint")
 
-    def test_controlled_proxy_sole_egress_and_live_revocation(self):
+    @contextmanager
+    def controlled_proxy(self, fixture):
         from coding_tools_mcp import network_proxy
-        # This fixture deliberately maps a synthetic granted public hostname
-        # to an actual host-side TCP echo server. Public-IP classification is
-        # tested independently without patches in test_network_proxy. Here we
-        # exercise real namespaces, native relay, CONNECT checks, and sockets.
-        host = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        host.settimeout(.1)
-        host.bind(("127.0.0.1", 0))
-        host.listen()
-        self.addCleanup(host.close)
-        port = host.getsockname()[1]
-        stopped = threading.Event()
-        self.addCleanup(stopped.set)
-        def serve():
-            while not stopped.is_set():
-                try:
-                    stream, _ = host.accept()
-                except socket.timeout:
-                    continue
-                except OSError:
-                    return
-                def echo(connection=stream):
-                    with connection:
-                        connection.settimeout(5)
-                        try:
-                            while data := connection.recv(512):
-                                connection.sendall(data)
-                        except OSError:
-                            pass
-                threading.Thread(target=echo, daemon=True).start()
-        threading.Thread(target=serve, daemon=True).start()
-        with socket.create_connection(("127.0.0.1", port), timeout=3) as baseline:
-            baseline.sendall(b"baseline")
-            self.assertEqual(baseline.recv(512), b"baseline")
+        # Map the synthetic granted public hostname to a proven host TCP echo
+        # service. Public/host-local address policy is tested without patches in
+        # test_network_proxy. Namespace isolation, seccomp, relay, CONNECT
+        # enforcement, and all bypass attempts below use actual kernel paths.
+        port = fixture.endpoints[0][3]
         original_resolve = socket.getaddrinfo
         def resolve(name, target_port, *args, **kwargs):
             if name == "fixture.example":
@@ -308,23 +399,65 @@ for family, kind, host, port in {endpoints!r}:
             proxy = original_proxy(allowed)
             proxies.append(proxy)
             return proxy
+        with patch.object(network_proxy.socket, "getaddrinfo", side_effect=resolve), patch.object(network_proxy, "_is_public_address", side_effect=lambda ip: ip == "127.0.0.1"), patch.object(network_proxy, "_is_host_local_address", return_value=False), patch.object(network_proxy, "ControlledProxy", side_effect=create_proxy):
+            try:
+                yield self.backend(network="proxy", allowed=(f"fixture.example:{port}",)), proxies
+            finally:
+                for proxy in proxies:
+                    proxy.close()
+
+    def test_proxy_ipv4_ipv6_tcp_udp_dns_quic_cannot_bypass_environment(self):
+        fixture = _LoopbackEchoFixture(self)
+        before = fixture.snapshot()
+        port = fixture.endpoints[0][3]
+        code = f"""
+import os,socket
+from urllib.parse import urlsplit
+proxy=urlsplit(os.environ['HTTPS_PROXY'])
+with socket.create_connection((proxy.hostname,proxy.port),timeout=3) as allowed:
+    allowed.sendall(b'CONNECT fixture.example:{port} HTTP/1.1\\r\\nHost: fixture.example:{port}\\r\\n\\r\\n')
+    reply=b''
+    while b'\\r\\n\\r\\n' not in reply:
+        part=allowed.recv(1)
+        assert part,'allowed tunnel closed before CONNECT response'
+        reply+=part
+    assert reply.startswith(b'HTTP/1.1 200'),reply
+    allowed.sendall(b'allowed')
+    assert allowed.recv(512)==b'allowed'
+# An untrusted program can ignore, remove, or override every proxy variable.
+# All direct IPv4/IPv6 TCP, UDP, DNS-wire and QUIC transport probes must remain
+# isolated even with NO_PROXY=* and no proxy-aware HTTP client involved.
+for name in list(os.environ):
+    if name.lower().endswith('_proxy'): os.environ.pop(name)
+os.environ['NO_PROXY']='*'
+os.environ['no_proxy']='*'
+try: socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+except PermissionError: pass
+else: raise AssertionError('Unix socket escape')
+""" + _direct_network_probes(fixture.endpoints)
+        with self.controlled_proxy(fixture) as (backend, _):
+            self.run_code(code, backend=backend)
+        expected = before.copy()
+        connections, received_bytes = expected[0]
+        expected[0] = (connections + 1, received_bytes + len(b"allowed"))
+        fixture.assert_received_only(expected, "Direct proxy bypass reached a host endpoint")
+
+    def test_controlled_proxy_sole_egress_and_live_revocation(self):
+        fixture = _LoopbackEchoFixture(self)
+        before = fixture.snapshot()
+        port = fixture.endpoints[0][3]
         code = f"""
 import os,socket,time
 from pathlib import Path
 from urllib.parse import urlsplit
 proxy=urlsplit(os.environ['HTTPS_PROXY'])
-try: socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
-except PermissionError: pass
-else: raise AssertionError('Unix socket escape')
-# No host loopback service should be reachable without the relay.
-if proxy.port != {port}:
-    try: socket.create_connection(('127.0.0.1',{port}),timeout=.2)
-    except OSError: pass
-    else: raise AssertionError('host loopback escape')
 stream=socket.create_connection((proxy.hostname,proxy.port),timeout=3)
 stream.sendall(b'CONNECT fixture.example:{port} HTTP/1.1\\r\\nHost: fixture.example:{port}\\r\\n\\r\\n')
 reply=b''
-while b'\\r\\n\\r\\n' not in reply: reply+=stream.recv(1)
+while b'\\r\\n\\r\\n' not in reply:
+    part=stream.recv(1)
+    assert part,'allowed tunnel closed before CONNECT response'
+    reply+=part
 assert reply.startswith(b'HTTP/1.1 200'),reply
 stream.sendall(b'allowed')
 assert stream.recv(512)==b'allowed'
@@ -333,26 +466,51 @@ with socket.create_connection((proxy.hostname,proxy.port),timeout=3) as denied:
     denied.sendall(b'CONNECT other.example:{port} HTTP/1.1\\r\\n\\r\\n')
     assert b'403' in denied.recv(512)
 Path('proxy-ready').touch()
-end=time.monotonic()+5
+end=time.monotonic()+10
 while not Path('proxy-closed').exists() and time.monotonic()<end: time.sleep(.02)
+assert Path('proxy-closed').exists(),'host did not revoke the proxy'
 stream.settimeout(2)
 try:
     stream.sendall(b'after-close')
     assert not stream.recv(512),'revoked tunnel still carries bytes'
+except socket.timeout: raise AssertionError('revocation did not close the established tunnel')
 except OSError: pass
-"""
-        with patch.object(network_proxy.socket, "getaddrinfo", side_effect=resolve), patch.object(network_proxy, "_is_public_address", side_effect=lambda ip: ip == "127.0.0.1"), patch.object(network_proxy, "_is_host_local_address", return_value=False), patch.object(network_proxy, "ControlledProxy", side_effect=create_proxy):
-            backend = self.backend(network="proxy", allowed=(f"fixture.example:{port}",))
+finally: stream.close()
+# Closing the host proxy must refuse NEW granted tunnels too. The isolated
+# native relay may accept locally, but must immediately close without a 200.
+try:
+    with socket.create_connection((proxy.hostname,proxy.port),timeout=2) as fresh:
+        fresh.sendall(b'CONNECT fixture.example:{port} HTTP/1.1\\r\\n\\r\\n')
+        reply=fresh.recv(512)
+        assert not reply,'new tunnel returned data after proxy exit'
+except socket.timeout: raise AssertionError('new tunnel hung after proxy exit')
+except OSError: pass
+for name in list(os.environ):
+    if name.lower().endswith('_proxy'): os.environ.pop(name)
+os.environ['NO_PROXY']='*'
+os.environ['no_proxy']='*'
+""" + _direct_network_probes(fixture.endpoints)
+        with self.controlled_proxy(fixture) as (backend, proxies):
             process, _ = backend.spawn([str(Path(sys.executable).resolve()), "-c", code], cwd=self.workspace, env={"PATH": "/usr/bin:/bin"})
             self.addCleanup(lambda: stop(process) if process.poll() is None else None)
-            deadline = time.monotonic()+5
+            deadline = time.monotonic()+10
             while not (self.workspace / "proxy-ready").exists() and process.poll() is None and time.monotonic()<deadline:
                 time.sleep(.02)
-            self.assertTrue((self.workspace / "proxy-ready").exists(), "native relay never reached allowed target")
+            if not (self.workspace / "proxy-ready").exists():
+                stop(process)
+                self.fail("native relay never reached allowed target")
+            self.assertEqual(len(proxies), 1)
             proxies[0].close()
+            self.assertFalse(proxies[0].healthy)
             (self.workspace / "proxy-closed").touch()
-            _, err = process.communicate(timeout=5)
+            _, err = process.communicate(timeout=10)
             self.assertEqual(process.returncode, 0, err.decode(errors="replace"))
+        expected = before.copy()
+        connections, received_bytes = expected[0]
+        expected[0] = (connections + 1, received_bytes + len(b"allowed"))
+        # Targets remain alive after revocation; server outage cannot satisfy
+        # either the existing/new tunnel checks or direct-fallback probes.
+        fixture.assert_received_only(expected, "Revoked proxy or direct fallback reached a host endpoint")
 
     def test_cancel_kills_setsid_grandchild(self):
         code = """
@@ -489,6 +647,58 @@ class NativeRuntimeTests(unittest.TestCase):
         self.assertTrue(runtime.workspace_mutation_payload()["enforced"])
         self.assertFalse((self.workspace / "fsmonitor-ran").exists())
 
+    def test_actual_strict_git_clean_and_process_filters_are_disabled(self):
+        assert self.git is not None
+        git_env = {"PATH": "/usr/bin:/bin", "HOME": str(self.base), "GIT_CONFIG_NOSYSTEM": "1",
+                   "GIT_CONFIG_GLOBAL": os.devnull}
+
+        def git(*arguments):
+            return subprocess.run([self.git, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+                                   *arguments], cwd=self.workspace, env=git_env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+
+        committed = git("-c", "user.name=Native Security Fixture", "-c", "user.email=fixture@example.invalid",
+                        "commit", "-qm", "Native filter baseline")
+        self.assertEqual(committed.returncode, 0, committed.stderr)
+        (self.workspace / "source.txt").write_text("changed native needle\n")
+        outside = self.base / "filter-outside-workspace"
+        inside = self.workspace / "filter-inside-workspace"
+        script = self.workspace / "native-filter.sh"
+        script.write_text("#!/bin/sh\n"
+                          f"printf 'executed\\n' > {shlex.quote(str(inside))}\n"
+                          f"printf 'executed\\n' > {shlex.quote(str(outside))}\n"
+                          "printf 'filter executed\\n'\n"
+                          "cat\n")
+        script.chmod(0o755)
+        for driver, option in (("native-clean", "clean"), ("native-process", "process")):
+            with self.subTest(driver=driver):
+                for key, value in ((f"filter.{driver}.{option}", str(script)),
+                                   (f"filter.{driver}.required", "true")):
+                    configured = git("config", key, value)
+                    self.assertEqual(configured.returncode, 0, configured.stderr)
+                (self.workspace / ".git" / "info" / "attributes").write_text(f"source.txt filter={driver}\n")
+                # Prove the synthetic driver is active on the host. Native
+                # acceptance must disable it, not pass because the fixture was
+                # inert or because an attempted side effect happened to fail.
+                git("diff", "--no-ext-diff", "--no-textconv")
+                self.assertTrue(inside.exists(), "Host Git did not execute the configured driver")
+                self.assertTrue(outside.exists(), "Host Git did not execute the configured driver")
+                inside.unlink()
+                outside.unlink()
+                runtime = self.runtime()
+                self.assertTrue(runtime.executor.last_launch_confirmed, "Startup Git bypassed native isolation")
+                self.assertTrue(runtime.git_status({})["is_repo"])
+                diff = runtime.git_diff({"include_untracked": False})["diff"]
+                self.assertIn("-alpha native needle\n+changed native needle", diff)
+                self.assertNotIn("filter executed", diff)
+                self.assertTrue(runtime.git_log({})["commits"])
+                self.assertTrue(runtime.git_show({})["is_repo"])
+                self.assertTrue(runtime.git_blame({"path": "source.txt", "end_line": 1})["lines"])
+                self.assertTrue(runtime.executor.last_launch_confirmed)
+                self.assertFalse(inside.exists())
+                self.assertFalse(outside.exists())
+                self.assertFalse((self.workspace / "fsmonitor-ran").exists())
+
 
 @unittest.skipUnless(sys.platform == "darwin", "Native Seatbelt profile validation only")
 class NativeSeatbeltProfileTests(unittest.TestCase):
@@ -607,36 +817,8 @@ int main(int argc, char **argv) {
             outside = base / "outside-secret"
             outside.write_text("private")
             self.assertEqual(outside.read_text(), "private")
-            # Test both IP families and TCP/UDP directly. A local DNS-wire
-            # exchange is among the UDP probes; no public DNS dependency.
-            endpoints = []
-            for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-                for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
-                    server = socket.socket(family, kind)
-                    self.addCleanup(server.close)
-                    server.settimeout(5)
-                    server.bind((host, 0))
-                    if kind == socket.SOCK_STREAM:
-                        server.listen()
-                        def echo(listener=server):
-                            stream, _ = listener.accept()
-                            with stream:
-                                stream.sendall(stream.recv(512))
-                    else:
-                        def echo(listener=server):
-                            data, peer = listener.recvfrom(512)
-                            listener.sendto(data, peer)
-                    worker = threading.Thread(target=echo, daemon=True)
-                    worker.start()
-                    address = server.getsockname()
-                    with socket.socket(family, kind) as client:
-                        client.settimeout(3)
-                        client.connect(address)
-                        payload = bytes.fromhex("123401000001000000000000076578616d706c6503636f6d0000010001")
-                        client.sendall(payload)
-                        self.assertEqual(client.recv(512), payload)
-                    worker.join(timeout=5)
-                    endpoints.append((int(family), int(kind), host, address[1]))
+            fixture = _LoopbackEchoFixture(self)
+            before = fixture.snapshot()
             spec = SandboxSpec(workspace, (workspace, *system_read_roots()), (workspace,), ())
             code = f"""
 from pathlib import Path
@@ -647,16 +829,7 @@ for action in [p.read_text,lambda:p.write_text('bad'),p.unlink]:
     try: action()
     except OSError: pass
     else: raise AssertionError('outside filesystem access')
-for family,kind,host,port in {endpoints!r}:
-    try:
-        with socket.socket(family,kind) as stream:
-            stream.settimeout(.5)
-            stream.connect((host,port))
-            stream.sendall(b'dns-wire')
-    except OSError: pass
-    else: raise AssertionError('Seatbelt network escape')
-print('profile file/network checks passed; strict lifecycle not supported')
-"""
+""" + _direct_network_probes(fixture.endpoints) + "print('profile file/network checks passed; strict lifecycle not supported')\n"
             profile = seatbelt_profile(spec)
             interpreter = str(Path(sys.executable).resolve())
             environment = {"PATH": "/usr/bin:/bin", "HOME": str(workspace), "TMPDIR": str(workspace)}
@@ -696,6 +869,7 @@ print('profile file/network checks passed; strict lifecycle not supported')
             self.assertIn(b"profile file/network checks passed", completed.stdout)
             self.assertEqual((workspace / "allowed").read_text(), "ok")
             self.assertEqual(outside.read_text(), "private")
+            fixture.assert_received_only(before, "Seatbelt command reached a host endpoint")
 
 
 class NativePlatformRejectionTests(unittest.TestCase):

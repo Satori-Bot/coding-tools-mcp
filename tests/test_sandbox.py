@@ -35,6 +35,25 @@ class SandboxTests(unittest.TestCase):
         values.update(kwargs)
         return SandboxSpec(**values)
 
+    def require_trusted_fixture_ancestors(self):
+        # Managed executors can expose / and /tmp as nobody-owned mounts.
+        # A user-created fixture cannot provide a positive trust baseline in
+        # that host layout. Check only this prerequisite: permission, pin and
+        # production trust failures must still fail the actual test normally.
+        owners = (0, os.geteuid())
+        untrusted = []
+        for ancestor in self.helper.parents:
+            owner = ancestor.stat().st_uid
+            if owner not in owners:
+                untrusted.append(f"{ancestor} uid={owner}")
+        if untrusted:
+            message = ("Trusted-helper fixture requires all ancestors owned by root or "
+                       f"the effective user uid={os.geteuid()}; host prerequisites unavailable: "
+                       + ", ".join(untrusted))
+            if os.environ.get("CODING_TOOLS_SANDBOX_REQUIRE_NATIVE") == "1":
+                self.fail("Required native sandbox validation cannot skip: " + message)
+            self.skipTest(message)
+
     def test_windows_strict_is_rejected_before_any_spawn(self):
         backend = SandboxBackend(self.spec())
         backend.platform = "win32"
@@ -192,13 +211,25 @@ class SandboxTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX descriptor and ownership checks")
     def test_helper_pin_and_trust_checked_without_executing_it(self):
+        self.require_trusted_fixture_ancestors()
         backend = SandboxBackend(self.spec(helper_sha256="0" * 64))
         with self.assertRaises(ToolFailure) as caught:
             backend._helper_fd(())
         self.assertEqual(caught.exception.code, "SANDBOX_HELPER_UNTRUSTED")
+        self.assertIn("SHA-256 does not match", caught.exception.message)
         fd = SandboxBackend(self.spec())._helper_fd(())
         self.addCleanup(os.close, fd)
         self.assertEqual(os.read(fd, 100), b"trusted pinned binary")
+
+    def test_invalid_helper_pin_rejected_before_install_checks(self):
+        # These rejection cases need no trusted host ancestry and remain
+        # exercised even when a positive helper fixture is unavailable.
+        for pin in (None, "", "0" * 63, "0" * 65, "g" * 64):
+            with self.subTest(pin=pin):
+                with self.assertRaises(ToolFailure) as caught:
+                    SandboxBackend(self.spec(helper_sha256=pin))._helper_fd(())
+                self.assertEqual(caught.exception.code, "SANDBOX_HELPER_UNTRUSTED")
+                self.assertIn("exact SHA-256 pin", caught.exception.message)
 
     @unittest.skipIf(os.name == "nt", "POSIX control descriptors")
     def test_stdout_cannot_forge_startup(self):
@@ -247,6 +278,7 @@ class SandboxTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX descriptor-backed launch planning")
     def test_user_namespace_is_required_not_optional(self):
+        self.require_trusted_fixture_ancestors()
         backend = SandboxBackend(self.spec())
         descriptors = []
         try:

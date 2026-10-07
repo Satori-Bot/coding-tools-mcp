@@ -5,7 +5,9 @@ import ast
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -22,7 +24,9 @@ class WorkspaceExecutorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name) / "workspace"
+        # The broker intentionally rejects symlink path components. macOS's
+        # /var temp alias must be resolved when constructing the fixture.
+        self.root = Path(self.temp.name).resolve(strict=True) / "workspace"
         self.root.mkdir()
         self.runtime_dir = self.root.parent / "runtime"
 
@@ -95,6 +99,18 @@ class WorkspaceExecutorTests(unittest.TestCase):
         self.assertTrue(run.called)
         self.assertIn("ls-files", run.call_args.args[0])
 
+    @unittest.skipUnless(shutil.which("git"), "Git fixture")
+    def test_private_git_view_rejects_writable_runtime_temp_directory(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.runtime_dir.mkdir()
+        # A caller-selected TMPDIR must not place protected configuration in
+        # storage writable by an arbitrary workspace command.
+        with patch("tempfile.tempdir", str(self.runtime_dir)):
+            with self.assertRaises(ToolFailure) as caught:
+                self.executor().run(["git", "status"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(caught.exception.code, "SANDBOX_UNAVAILABLE")
+        self.assertEqual(list(self.runtime_dir.iterdir()), [])
+
     @unittest.skipUnless(shutil.which("git") and os.name != "nt", "POSIX Git fixture")
     def test_repository_fsmonitor_and_textconv_do_not_execute(self) -> None:
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
@@ -131,10 +147,13 @@ class WorkspaceExecutorTests(unittest.TestCase):
     @unittest.skipUnless(broker_supported(), "POSIX handle broker")
     def test_external_git_storage_rejected_before_process_spawn(self) -> None:
         (self.root / ".git").write_text("gitdir: ../secret-git\n")
+        git = Path(shutil.which("git") or "/usr/bin/git").resolve(strict=True)
         with FileBroker(self.root) as broker:
-            executor = self.executor(IsolationConfig(mode="strict"), broker)
+            # This storage-policy test explicitly authorizes the selected
+            # toolchain, including Homebrew Git outside macOS system roots.
+            executor = self.executor(IsolationConfig(mode="strict", read_roots=(git.parent,)), broker)
             with patch.object(executor, "_backend") as backend, self.assertRaises(ToolFailure) as caught:
-                executor.run([shutil.which("git") or "/usr/bin/git", "status"])
+                executor.run([str(git), "status"])
             self.assertEqual(caught.exception.code, "EXTERNAL_GIT_STORAGE_DENIED")
             backend.assert_not_called()
 
@@ -193,3 +212,105 @@ class WorkspaceExecutorTests(unittest.TestCase):
         terminate.assert_called_once_with(process, HARD_KILL_SIGNAL)
         self.assertEqual(process.communicate.call_count, 2)
         self.assertTrue(process.stdout.closed)
+
+    def delayed_git(self, *, fork_during_config: bool = False) -> tuple[Path, Path]:
+        git = shutil.which("git")
+        assert git is not None
+        subprocess.run([git, "init", "-q", str(self.root)], check=True)
+        wrapper = self.root.parent / "git"
+        heartbeat = self.root.parent / "probe-child-heartbeat"
+        child = ("from pathlib import Path\nimport time\n"
+                 f"p=Path({str(heartbeat)!r})\n"
+                 "while True:\n with p.open('a') as output: output.write('.')\n time.sleep(.02)\n")
+        wrapper.write_text(f"#!{sys.executable}\nimport os,subprocess,sys,time\n"
+                           "operation=next(x for x in sys.argv[1:] if x in {'rev-parse','config','diff'})\n"
+                           f"if operation=='config' and {fork_during_config!r}:\n"
+                           f" subprocess.Popen([{sys.executable!r},'-c',{child!r}])\n time.sleep(3)\n"
+                           "time.sleep(1 if operation=='diff' else .08)\n"
+                           f"os.execv({git!r},[{git!r},*sys.argv[1:]])\n")
+        wrapper.chmod(0o755)
+        return wrapper, heartbeat
+
+    @unittest.skipUnless(shutil.which("git") and os.name != "nt", "POSIX delayed Git fixture")
+    def test_git_timeout_budget_covers_probes_final_process_and_private_view_cleanup(self) -> None:
+        from coding_tools_mcp.git_helpers import create_git_helper_view
+        wrapper, _ = self.delayed_git()
+        executor = self.executor()
+        actual_spawn = executor._spawn_prepared
+        timeouts = []
+        roots = []
+
+        def spawn(command, *args, **kwargs):
+            process = actual_spawn(command, *args, **kwargs)
+            communicate = process.communicate
+            operation = next(item for item in command if item in {"rev-parse", "config", "diff"})
+
+            def record(*args, **kwargs):
+                if kwargs.get("timeout") is not None:
+                    timeouts.append((operation, kwargs["timeout"]))
+                return communicate(*args, **kwargs)
+
+            process.communicate = record
+            return process
+
+        def create(*args, **kwargs):
+            view = create_git_helper_view(*args, **kwargs)
+            if view is not None:
+                roots.append(view.root)
+            return view
+
+        requested = [str(wrapper), "-C", str(self.root), "diff"]
+        with patch.object(executor, "_spawn_prepared", side_effect=spawn), \
+                patch("coding_tools_mcp.git_helpers.create_git_helper_view", side_effect=create):
+            with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                executor.run(requested, timeout=.8, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(caught.exception.cmd, requested)
+        self.assertEqual(caught.exception.timeout, .8)
+        self.assertEqual([operation for operation, _ in timeouts], ["rev-parse", "config", "rev-parse", "diff"])
+        self.assertLess(timeouts[-1][1], .65, "The final Git process received a fresh timeout budget")
+        self.assertTrue(roots, "The timeout did not exercise final-process facade cleanup")
+        self.assertTrue(all(not root.exists() for root in roots))
+
+    @unittest.skipUnless(shutil.which("git") and os.name != "nt", "POSIX delayed Git fixture")
+    def test_git_probe_timeout_kills_descendants_and_never_launches_final_process(self) -> None:
+        wrapper, heartbeat = self.delayed_git(fork_during_config=True)
+        executor = self.executor()
+        actual_spawn = executor._spawn_prepared
+        operations = []
+
+        def spawn(command, *args, **kwargs):
+            operations.append(next(item for item in command if item in {"rev-parse", "config", "diff"}))
+            return actual_spawn(command, *args, **kwargs)
+
+        with patch.object(executor, "_spawn_prepared", side_effect=spawn):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                executor.run([str(wrapper), "-C", str(self.root), "diff"], timeout=.5,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(operations, ["rev-parse", "config"])
+        self.assertTrue(heartbeat.exists(), "The synthetic probe did not create its descendant")
+        after = heartbeat.read_bytes()
+        time.sleep(.1)
+        self.assertEqual(heartbeat.read_bytes(), after, "A Git probe descendant survived the timeout")
+
+    @unittest.skipUnless(shutil.which("git") and os.name != "nt", "POSIX descriptor fixture")
+    def test_git_probe_failure_forwards_raw_diagnostics_to_requested_descriptor(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        env = {**os.environ, "GIT_CONFIG_SYSTEM": str(self.root.parent), "GIT_CONFIG_GLOBAL": os.devnull,
+               "GIT_CONFIG_NOSYSTEM": "0"}
+        expected = subprocess.run(["git", "-C", str(self.root), "rev-parse", "--show-toplevel"], env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(expected.returncode, 0)
+        reader, writer = os.pipe()
+        try:
+            completed = self.executor().run(["git", "-C", str(self.root), "status"], env=env,
+                                             stdout=subprocess.PIPE, stderr=writer)
+            os.close(writer)
+            writer = -1
+            diagnostic = os.read(reader, 65536)
+        finally:
+            os.close(reader)
+            if writer != -1:
+                os.close(writer)
+        self.assertEqual(completed.returncode, expected.returncode)
+        self.assertEqual(diagnostic, expected.stderr)
+        self.assertIsNone(completed.stderr)
