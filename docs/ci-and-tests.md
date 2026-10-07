@@ -44,8 +44,10 @@ workflow. This pipeline only publishes versions greater than `0.5.0`.
    creates the tag and GitHub Release. The tag is a completion receipt.
 
 Hard gates are metadata/version consistency, MCP contract/unit/security and
-integration tests (`compliance`), `real-workloads`, package builds, an isolated
+integration tests (`compliance`), `native-sandbox`, `real-workloads`, package builds, an isolated
 wheel installation outside the checkout, and npm launcher/pack verification.
+`native-sandbox` runs every Linux/macOS/Windows acceptance group at the selected
+source SHA and must succeed before package builds or either publisher can start.
 SWE-bench runs separately as advisory evidence: it is not a build or publish
 prerequisite. Its infrastructure failure may affect the overall evidence run,
 never the package publication dependency chain. Do not make that optional

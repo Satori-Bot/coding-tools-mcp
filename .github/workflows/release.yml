@@ -75,6 +75,14 @@ jobs:
     with:
       source_ref: ${{ needs.plan.outputs.source_sha }}
 
+  native-sandbox:
+    name: Native sandbox hard gate
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    uses: ./.github/workflows/cross-platform-sandbox.yml
+    with:
+      source_ref: ${{ needs.plan.outputs.source_sha }}
+
   real-workloads:
     name: Hard gate
     needs: plan
@@ -96,7 +104,7 @@ jobs:
 
   build:
     name: Build and verify packages
-    needs: [plan, compliance, real-workloads]
+    needs: [plan, compliance, native-sandbox, real-workloads]
     runs-on: ubuntu-latest
     env:
       SOURCE_DATE_EPOCH: ${{ needs.plan.outputs.source_date_epoch }}

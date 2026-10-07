@@ -366,7 +366,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
     def test_finalization_requires_both_verified_registries(self) -> None:
         self.assertEqual(set(self.jobs["github-release"]["needs"]), {"plan", "publish-pypi", "publish-npm"})
-        self.assertEqual(set(self.jobs["build"]["needs"]), {"plan", "compliance", "real-workloads"})
+        self.assertEqual(set(self.jobs["build"]["needs"]), {"plan", "compliance", "native-sandbox", "real-workloads"})
 
     def test_both_registries_are_preflighted_before_either_publisher_can_start(self) -> None:
         steps = self.jobs["build"]["steps"]
@@ -391,7 +391,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertFalse(self.jobs["swebench-lite"]["with"]["blocking"])
 
     def test_source_sha_is_passed_to_all_evidence_and_builds(self) -> None:
-        for job in ("compliance", "real-workloads", "swebench-lite"):
+        for job in ("compliance", "native-sandbox", "real-workloads", "swebench-lite"):
             self.assertEqual(self.jobs[job]["with"]["source_ref"], "${{ needs.plan.outputs.source_sha }}")
         for job in ("build", "github-release"):
             checkouts = [step for step in self.jobs[job]["steps"] if step.get("with", {}).get("path") == "source"]
