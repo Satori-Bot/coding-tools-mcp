@@ -24,6 +24,7 @@ These documents stay with the source because tests and releases validate them ag
 - [Telemetry](telemetry.md)
 - [Local tool event journal](local-tool-events.md)
 - [Security boundary](security-boundary.md)
+- [Cross-platform execution isolation](cross-platform-sandbox.md)
 - [Limitations](limitations.md)
 
 ## Engineering and evaluation

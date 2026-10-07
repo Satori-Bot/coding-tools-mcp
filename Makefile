@@ -5,8 +5,8 @@ export CODING_TOOLS_MCP_TELEMETRY ?= off
 PROJECT_VERSION := $(shell $(PYTHON) -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
 RELEASE_TAG ?= v$(PROJECT_VERSION)
 COMPLIANCE_RUNNER := PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m tests.compliance.runner
-PYTHON_SOURCES := coding_tools_mcp tests benchmarks
-MYPY_TARGETS := coding_tools_mcp benchmarks/mcp_http.py benchmarks/runtime_latency.py benchmarks/swebench/run_smoke.py benchmarks/swebench/generate_reference_predictions.py benchmarks/real_workloads.py benchmarks/agent_eval
+PYTHON_SOURCES := coding_tools_mcp tests benchmarks scripts/release_plan.py scripts/release_artifacts.py scripts/finalize_release.py scripts/verify_release_packages.py
+MYPY_TARGETS := scripts/release_plan.py scripts/release_artifacts.py scripts/finalize_release.py scripts/verify_release_packages.py coding_tools_mcp benchmarks/mcp_http.py benchmarks/runtime_latency.py benchmarks/swebench/run_smoke.py benchmarks/swebench/generate_reference_predictions.py benchmarks/swebench/pinned.py benchmarks/swebench/replay_mcp.py benchmarks/real_workloads.py benchmarks/agent_eval
 REPORT_FLAG ?= --report
 SWE_BENCH_ARGS ?=
 DOGFOOD_PORT ?= 18772
@@ -18,7 +18,8 @@ RUFF_FLAGS ?= --exclude benchmarks/dogfood --ignore=E501
 # Eval fixtures are task material, not source: several deliberately define the
 # same module name so mypy must not crawl them.
 MYPY_FLAGS ?= --python-version 3.11 --exclude '^benchmarks/agent_eval/fixtures/' --disable-error-code union-attr --disable-error-code assignment --disable-error-code arg-type --disable-error-code no-untyped-def
-.PHONY: start lint typecheck test test-patch-repro ci check-dispatch-inputs check-npm-launcher check-release compliance test-protocol test-integration test-mcp-contract test-dual-era test-tool-golden test-security test-e2e test-runtime-semantics test-docs-required test-schema-drift dogfood-mcp dogfood-runner dogfood-smoke benchmark-latency benchmark-smoke benchmark-real-workloads agent-eval agent-eval-validate swebench-reference-predictions swebench-preflight swebench-evaluate install-user publish-testpypi publish-pypi publish-all report
+
+.PHONY: start lint typecheck test test-patch-repro ci check-dispatch-inputs check-npm-launcher check-release compliance test-protocol test-integration test-mcp-contract test-dual-era test-tool-golden test-security test-e2e test-runtime-semantics test-docs-required test-schema-drift dogfood-mcp dogfood-runner dogfood-smoke benchmark-latency benchmark-smoke benchmark-real-workloads agent-eval agent-eval-validate swebench-mcp-replay swebench-reference-predictions swebench-preflight swebench-evaluate install-user publish-testpypi publish-pypi publish-all report
 
 start:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m coding_tools_mcp --workspace "$(MCP_WORKSPACE)" --host "$(MCP_HOST)" --port "$(MCP_PORT)" $(MCP_ARGS)
@@ -104,6 +105,9 @@ agent-eval-validate:
 
 agent-eval:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) benchmarks/agent_eval/run_eval.py $(AGENT_EVAL_ARGS)
+
+swebench-mcp-replay:
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) benchmarks/swebench/replay_mcp.py $(SWE_BENCH_ARGS)
 
 swebench-reference-predictions:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) benchmarks/swebench/generate_reference_predictions.py \

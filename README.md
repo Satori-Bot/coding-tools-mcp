@@ -116,22 +116,26 @@ authenticated Cloudflare Tunnel. Ephemeral compute, no server of your own.
 The desktop application now lives in its own repository:
 [coding-tools-mcp/desktop](https://github.com/coding-tools-mcp/desktop).
 
-```bash
-git clone https://github.com/coding-tools-mcp/desktop.git
-cd desktop
-python -m pip install -e .
-coding-tools-mcp-desktop
-```
+Install or build the native Rust/Tauri application using the
+[desktop setup guide](https://github.com/coding-tools-mcp/desktop/blob/925f324a309b302eff90cd1ee5ef960cd8c3d9c7/README.md#first-run),
+then open the native application directly. Pull-request CI bundles are unsigned
+review artifacts, not published releases.
+
+The Python package only provides the `coding-tools-mcp-desktop` compatibility
+launcher; `pip install` alone does not install the GUI. Install or build the native
+application first. If the launcher cannot find it, set
+`CODING_TOOLS_MCP_DESKTOP_BINARY` to the native executable.
 
 Per-workspace profiles, server and tunnel start/stop, credential setup with
 clipboard helpers, live health checks. English and 简体中文. The desktop app is
 versioned and released independently from the core runtime.
 
 If you previously installed `coding-tools-mcp[desktop]`, upgrade the core runtime
-before installing the standalone app above. If the standalone app already
-shares that environment, reinstall it after the core upgrade: the old core
-package owned the same desktop files and command. The new core package no longer
-ships the desktop extra or the `coding-tools-mcp-desktop` command.
+before installing the standalone Python compatibility package. If that package
+already shares the same Python environment, reinstall it after the core upgrade:
+the old core package owned the same desktop files and command. The native
+application is installed separately. The new core package no longer ships the
+desktop extra or the `coding-tools-mcp-desktop` command.
 
 **6. Keep an interactive command alive.** `exec_command` starts a REPL or
 debugger under a real PTY; `write_stdin` feeds it across turns; `read_output`

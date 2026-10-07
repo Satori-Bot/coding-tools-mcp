@@ -106,20 +106,22 @@ PR，用完即毁。→ [Docker 沙箱](https://coding-tools-mcp.github.io/docs/
 桌面应用已经拆到独立仓库：
 [coding-tools-mcp/desktop](https://github.com/coding-tools-mcp/desktop)。
 
-```bash
-git clone https://github.com/coding-tools-mcp/desktop.git
-cd desktop
-python -m pip install -e .
-coding-tools-mcp-desktop
-```
+请按照
+[桌面安装与构建指南](https://github.com/coding-tools-mcp/desktop/blob/925f324a309b302eff90cd1ee5ef960cd8c3d9c7/README.md#first-run)
+安装或构建 Rust/Tauri 原生应用，然后直接打开原生应用。拉取请求 CI 生成的
+安装包是未签名的评审产物，并非正式发布版本。
+
+Python 包只提供 `coding-tools-mcp-desktop` 兼容启动器；仅执行 `pip install`
+不会安装图形界面。请先安装或构建原生应用。如果启动器无法找到它，请将
+`CODING_TOOLS_MCP_DESKTOP_BINARY` 指向原生可执行文件。
 
 按工作区管理配置、一键启停服务器与隧道、凭证设置带剪贴板助手、实时健康
 检查。支持英文与简体中文。Desktop 与核心 runtime 现在独立版本、独立发布。
 
-如果此前安装的是 `coding-tools-mcp[desktop]`，请先升级核心 runtime，再按
-上面的步骤安装独立桌面应用。如果同一环境中已安装独立桌面应用，请在核心
-升级后重装它：旧核心包拥有相同的桌面文件和命令。新核心包不再提供
-`desktop` extra 或 `coding-tools-mcp-desktop` 命令。
+如果此前安装的是 `coding-tools-mcp[desktop]`，请先升级核心 runtime，再安装
+独立的 Python 兼容启动器包。如果同一 Python 环境中已安装该包，请在核心
+升级后重装它：旧核心包拥有相同的桌面文件和命令。原生应用需要单独安装。
+新核心包不再提供 `desktop` extra 或 `coding-tools-mcp-desktop` 命令。
 
 **6. 保持一个活着的交互式命令。**`exec_command` 在真实 PTY 下启动 REPL 或
 调试器；`write_stdin` 跨轮次喂输入；`read_output` 分页读取长输出；
