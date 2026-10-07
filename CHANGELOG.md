@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- Opt-in `--execution-isolation strict` uses one immutable policy for all
+  workspace processes and handle-relative structured file access. Linux uses a
+  pinned native helper and bubblewrap for offline isolation or exact-destination
+  CONNECT proxy egress; initialization failures never fall back to plain
+  execution. See [cross-platform sandbox](docs/cross-platform-sandbox.md) for
+  installation, native acceptance gates, and explicit capability limitations.
+- Windows compatibility execution discovers trusted PowerShell 7 installations,
+  supports explicit cmd selection/fallback, and assigns suspended processes to
+  non-breakaway, kill-on-close Job Objects before resuming them. Existing cmd
+  scripts can set `CODING_TOOLS_MCP_WINDOWS_SHELL=cmd`. Native Windows strict
+  filesystem/network isolation remains unavailable; Jobs manage lifetime only.
+- macOS has an experimental Seatbelt policy compiler and separate native
+  file/network acceptance tests. Full
+  strict execution is rejected while hostile descendant cleanup lacks a
+  reliable native mechanism; no Linux-equivalent guarantee is claimed.
+
 ### Fixed
 
 - Adjacent `@@` anchors must contain meaningful text before they count as
