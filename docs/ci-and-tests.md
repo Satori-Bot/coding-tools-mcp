@@ -51,6 +51,26 @@ prerequisite. Its infrastructure failure may affect the overall evidence run,
 never the package publication dependency chain. Do not make that optional
 workflow a required branch-protection status.
 
+### Repository setup before the next release
+
+Before merging the next version PR, a repository administrator must verify these
+settings in GitHub. Workflow files do not configure branch protection, rulesets,
+or publishing environments.
+
+- Protect `main` with a branch rule or ruleset requiring pull requests and at
+  least one approving review. Require the `compliance` check from
+  `.github/workflows/compliance.yml`, which includes release metadata validation.
+  Select the check from a successful PR run and require branches to be up to date
+  before merging so the required checks cover the current base.
+- Keep the advisory SWE-bench checks optional. The release workflow's
+  post-merge build and publish jobs are not pre-merge required checks;
+  `real-workloads` remains a hard gate inside the release dependency chain.
+- In Settings → Environments, verify that deployment branch rules for `pypi`
+  and `npm` permit `main`. Preserve any required reviewer policy and confirm
+  the trusted publishers still match repository `xyTom/coding-tools-mcp`,
+  workflow `release.yml`, and their respective environment names. See
+  [trusted publishing setup](#trusted-publishing-setup) below.
+
 ### Recovery and concurrency
 
 First try **Re-run failed jobs** on the original main run. Artifacts are named

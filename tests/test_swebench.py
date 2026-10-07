@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import yaml
 
@@ -299,6 +299,39 @@ class WorkflowTests(unittest.TestCase):
                        "TIMEOUT_MINUTES": value}
                 result = subprocess.run(["bash", "-e", "-c", validation], env=env, capture_output=True, check=False)
                 self.assertEqual(result.returncode == 0, accepted)
+
+
+class ReplayExecutionTests(unittest.TestCase):
+    def test_marker_before_empty_final_poll_is_successful(self) -> None:
+        initial = {"command_id": "command", "status": "running", "exit_code": None, "stdout": "syntax-ok\n"}
+        poll = Mock(side_effect=[
+            {"command_id": "command", "status": "running", "exit_code": None, "stdout": ""},
+            {"command_id": "command", "status": "exited", "exit_code": 0, "stdout": ""},
+        ])
+        replay_mcp.verify_execution(poll, initial)
+        self.assertEqual(poll.call_count, 2)
+
+    def test_marker_split_across_responses_is_successful(self) -> None:
+        initial = {"command_id": "command", "status": "queued", "exit_code": None, "stdout": "syn"}
+        poll = Mock(side_effect=[
+            {"command_id": "command", "status": "running", "exit_code": None, "stdout": "tax-"},
+            {"command_id": "command", "status": "exited", "exit_code": 0, "stdout": "ok\n"},
+        ])
+        replay_mcp.verify_execution(poll, initial)
+
+    def test_marker_does_not_override_failed_exit_and_diagnostics_are_preserved(self) -> None:
+        initial = {"command_id": "command", "status": "running", "exit_code": None,
+                   "stdout": "syntax-ok\n", "stderr": "early warning\n"}
+        poll = Mock(return_value={"command_id": "command", "status": "exited", "exit_code": 1,
+                                  "stdout": "", "stderr": "late failure\n"})
+        with self.assertRaises(RuntimeError) as error:
+            replay_mcp.verify_execution(poll, initial)
+        for message in ("syntax-ok", "early warning", "late failure", "'exit_code': 1"):
+            self.assertIn(message, str(error.exception))
+
+    def test_successful_exit_without_marker_is_rejected(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "MCP exec verification failed"):
+            replay_mcp.verify_execution(Mock(), {"status": "exited", "exit_code": 0, "stdout": ""})
 
 
 class ReplayTests(unittest.TestCase):
