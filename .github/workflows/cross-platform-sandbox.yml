@@ -5,6 +5,13 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Immutable release commit; defaults to triggering revision
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -47,6 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
         with:
+          ref: ${{ inputs.source_ref || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@v6.2.0
         with:
@@ -123,6 +131,7 @@ jobs:
             file-broker-results.txt
           if-no-files-found: warn
           retention-days: 14
+          overwrite: true
 
   windows-shells:
     name: Windows ${{ matrix.shell }} compatibility
@@ -140,6 +149,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
         with:
+          ref: ${{ inputs.source_ref || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@v6.2.0
         with:
@@ -187,3 +197,4 @@ jobs:
             windows-regression-results.txt
           if-no-files-found: warn
           retention-days: 14
+          overwrite: true

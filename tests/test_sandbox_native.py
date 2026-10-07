@@ -262,6 +262,181 @@ for family, kind, host, port in {endpoints!r}:
 """
         self.run_code(code)
 
+    def test_proxy_blocks_direct_ipv4_ipv6_tcp_udp_dns_without_relying_on_environment(self):
+        from coding_tools_mcp import network_proxy
+
+        # Keep every host-side listener open throughout the test. Baseline each
+        # immediately before and after the isolated probes, then inspect the
+        # host receive queues for delivery (not merely client-side errors).
+        endpoints = []
+        listeners = []
+        dns_query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07fixture\x07invalid\x00\x00\x01\x00\x01"
+
+        def listener(family, kind, host):
+            server = socket.socket(family, kind)
+            self.addCleanup(server.close)
+            server.settimeout(3)
+            server.bind((host, 0))
+            if kind == socket.SOCK_STREAM:
+                server.listen()
+            return server
+
+        def baseline(server, payload, *, dns=False):
+            # A minimal DNS-wire NXDOMAIN reply avoids public DNS dependence.
+            expected = payload[:2] + b"\x81\x83" + payload[4:] if dns else payload
+            errors = []
+
+            def respond():
+                try:
+                    if server.type == socket.SOCK_STREAM:
+                        connection, _ = server.accept()
+                        with connection:
+                            connection.settimeout(3)
+                            received = b""
+                            while len(received) < len(payload):
+                                chunk = connection.recv(512)
+                                if not chunk:
+                                    raise AssertionError("baseline ended before payload delivery")
+                                received += chunk
+                            self.assertEqual(received, payload)
+                            connection.sendall(expected)
+                    else:
+                        received, address = server.recvfrom(512)
+                        self.assertEqual(received, payload)
+                        server.sendto(expected, address)
+                except Exception as error:
+                    errors.append(error)
+
+            server.settimeout(3)
+            worker = threading.Thread(target=respond, daemon=True)
+            worker.start()
+            try:
+                with socket.socket(server.family, server.type) as client:
+                    client.settimeout(3)
+                    client.connect(server.getsockname())
+                    client.sendall(payload)
+                    received = b""
+                    while len(received) < len(expected):
+                        chunk = client.recv(512)
+                        self.assertTrue(chunk, "baseline ended before response delivery")
+                        received += chunk
+                    self.assertEqual(received, expected)
+            finally:
+                worker.join(timeout=4)
+            self.assertFalse(worker.is_alive(), "baseline fixture did not finish")
+            self.assertEqual(errors, [], f"host baseline fixture failed: {errors!r}")
+
+        for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+            for label, kind in (("tcp", socket.SOCK_STREAM), ("udp", socket.SOCK_DGRAM), ("dns", socket.SOCK_DGRAM)):
+                server = listener(family, kind, host)
+                payload = dns_query if label == "dns" else f"direct-{host}-{label}".encode()
+                endpoints.append((int(family), int(kind), host, server.getsockname()[1], payload))
+                listeners.append((server, label))
+
+        allowed_server = listener(socket.AF_INET, socket.SOCK_STREAM, "127.0.0.1")
+        allowed_port = allowed_server.getsockname()[1]
+        baseline(allowed_server, b"allowed-baseline")
+        original_resolve = socket.getaddrinfo
+
+        def resolve(name, port, *args, **kwargs):
+            if name == "proxy-matrix.example" and port == allowed_port:
+                return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", allowed_port))]
+            return original_resolve(name, port, *args, **kwargs)
+
+        # Only the synthetic CONNECT destination maps to a local fixture.
+        # Real destination classification is tested unpatched elsewhere.
+        with patch.object(network_proxy.socket, "getaddrinfo", side_effect=resolve), patch.object(network_proxy, "_is_public_address", side_effect=lambda ip: ip == "127.0.0.1"), patch.object(network_proxy, "_is_host_local_address", return_value=False):
+            for omit_proxy_environment in (False, True):
+                with self.subTest(proxy_environment="omitted" if omit_proxy_environment else "present"):
+                    for (server, label), endpoint in zip(listeners, endpoints):
+                        baseline(server, endpoint[-1], dns=label == "dns")
+                    allowed_errors = []
+                    # The accept deadline includes cold namespace/helper startup.
+                    allowed_server.settimeout(10)
+
+                    def echo_allowed():
+                        try:
+                            connection, _ = allowed_server.accept()
+                            with connection:
+                                connection.settimeout(5)
+                                while data := connection.recv(512):
+                                    connection.sendall(data)
+                        except Exception as error:
+                            allowed_errors.append(error)
+
+                    worker = threading.Thread(target=echo_allowed, daemon=True)
+                    worker.start()
+                    probe = f"""
+import json, os, socket, sys
+relay_host, relay_port = json.loads(sys.argv[1])
+proxy_names = [name for name in os.environ if name.lower().endswith('_proxy')]
+assert bool(proxy_names) is {not omit_proxy_environment!r}, proxy_names
+def expect_echo(tunnel, payload):
+    tunnel.sendall(payload)
+    received = b''
+    while len(received) < len(payload):
+        chunk = tunnel.recv(len(payload) - len(received))
+        assert chunk, 'allowed tunnel closed before echo completed'
+        received += chunk
+    assert received == payload, received
+with socket.create_connection((relay_host, relay_port), timeout=3) as tunnel:
+    tunnel.sendall(b'CONNECT proxy-matrix.example:{allowed_port} HTTP/1.1\\r\\nHost: proxy-matrix.example:{allowed_port}\\r\\n\\r\\n')
+    response = b''
+    while not response.endswith(b'\\r\\n\\r\\n'):
+        chunk = tunnel.recv(1)
+        assert chunk and len(response) < 4096, response
+        response += chunk
+    assert response.startswith(b'HTTP/1.1 200'), response
+    expect_echo(tunnel, b'before')
+    attempted = []
+    for family, kind, host, port, payload in {endpoints!r}:
+        # Proxy mode intentionally permits INET socket creation. Even a
+        # successful UDP send says nothing about delivery to the host.
+        with socket.socket(family, kind) as direct:
+            direct.settimeout(.3)
+            try:
+                if kind == socket.SOCK_STREAM:
+                    direct.connect((host, port))
+                    direct.sendall(payload)
+                else:
+                    direct.sendto(payload, (host, port))
+            except OSError:
+                pass
+        attempted.append((family, kind, host, port))
+    expect_echo(tunnel, b'after')
+print(json.dumps(attempted))
+"""
+                    code = f"""
+import json, os, sys
+from urllib.parse import urlsplit
+relay = urlsplit(os.environ['HTTPS_PROXY'])
+environment = dict(os.environ)
+if {omit_proxy_environment!r}:
+    environment = {{name: value for name, value in environment.items() if not name.lower().endswith('_proxy')}}
+# Re-exec the actual probe with all proxy variables absent. Relay coordinates
+# are explicit arguments so the allowed CONNECT control still has a route.
+os.execve(sys.executable, [sys.executable, '-c', {probe!r}, json.dumps([relay.hostname, relay.port])], environment)
+"""
+                    try:
+                        observed = json.loads(self.run_code(code, backend=self.backend(network="proxy", allowed=(f"proxy-matrix.example:{allowed_port}",))))
+                        self.assertEqual(observed, [list(endpoint[:4]) for endpoint in endpoints])
+                    finally:
+                        worker.join(timeout=11)
+                    self.assertFalse(worker.is_alive(), "allowed CONNECT fixture did not finish")
+                    self.assertEqual(allowed_errors, [], f"allowed CONNECT fixture failed: {allowed_errors!r}")
+                    for (server, label), endpoint in zip(listeners, endpoints):
+                        server.settimeout(.1)
+                        try:
+                            if server.type == socket.SOCK_STREAM:
+                                connection, _ = server.accept()
+                                connection.close()
+                                self.fail(f"direct TCP reached host fixture: {endpoint[:4]!r}")
+                            data, _ = server.recvfrom(512)
+                            self.fail(f"direct {label} reached host fixture: {endpoint[:4]!r}: {data!r}")
+                        except socket.timeout:
+                            pass
+                        baseline(server, endpoint[-1], dns=label == "dns")
+
     def test_controlled_proxy_sole_egress_and_live_revocation(self):
         from coding_tools_mcp import network_proxy
         # This fixture deliberately maps a synthetic granted public hostname

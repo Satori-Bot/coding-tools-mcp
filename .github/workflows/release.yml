@@ -83,6 +83,14 @@ jobs:
     with:
       source_ref: ${{ needs.plan.outputs.source_sha }}
 
+  cross-platform-sandbox:
+    name: Hard gate
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    uses: ./.github/workflows/cross-platform-sandbox.yml
+    with:
+      source_ref: ${{ needs.plan.outputs.source_sha }}
+
   # Evidence is deliberately absent from build/publish needs. External Docker,
   # Hugging Face and harness outages must not block or delay package publication.
   swebench-lite:
@@ -96,7 +104,7 @@ jobs:
 
   build:
     name: Build and verify packages
-    needs: [plan, compliance, real-workloads]
+    needs: [plan, compliance, real-workloads, cross-platform-sandbox]
     runs-on: ubuntu-latest
     env:
       SOURCE_DATE_EPOCH: ${{ needs.plan.outputs.source_date_epoch }}

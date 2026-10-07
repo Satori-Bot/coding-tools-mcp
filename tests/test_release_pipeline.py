@@ -366,7 +366,23 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
     def test_finalization_requires_both_verified_registries(self) -> None:
         self.assertEqual(set(self.jobs["github-release"]["needs"]), {"plan", "publish-pypi", "publish-npm"})
-        self.assertEqual(set(self.jobs["build"]["needs"]), {"plan", "compliance", "real-workloads"})
+        self.assertEqual(
+            set(self.jobs["build"]["needs"]),
+            {"plan", "compliance", "real-workloads", "cross-platform-sandbox"},
+        )
+
+    def test_native_sandbox_is_a_mandatory_source_pinned_release_gate(self) -> None:
+        gate = self.jobs["cross-platform-sandbox"]
+        self.assertEqual(gate["uses"], "./.github/workflows/cross-platform-sandbox.yml")
+        self.assertEqual(gate["needs"], "plan")
+        self.assertEqual(gate["if"], "needs.plan.outputs.publish == 'true'")
+        self.assertEqual(gate["with"], {"source_ref": "${{ needs.plan.outputs.source_sha }}"})
+        self.assertNotIn("continue-on-error", gate)
+        self.assertNotIn("secrets", gate)
+        for job_name in ("build", "publish-pypi", "publish-npm", "github-release"):
+            job = self.jobs[job_name]
+            self.assertNotIn("if", job, job_name)
+            self.assertNotIn("continue-on-error", job, job_name)
 
     def test_both_registries_are_preflighted_before_either_publisher_can_start(self) -> None:
         steps = self.jobs["build"]["steps"]
@@ -391,7 +407,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertFalse(self.jobs["swebench-lite"]["with"]["blocking"])
 
     def test_source_sha_is_passed_to_all_evidence_and_builds(self) -> None:
-        for job in ("compliance", "real-workloads", "swebench-lite"):
+        for job in ("compliance", "real-workloads", "cross-platform-sandbox", "swebench-lite"):
             self.assertEqual(self.jobs[job]["with"]["source_ref"], "${{ needs.plan.outputs.source_sha }}")
         for job in ("build", "github-release"):
             checkouts = [step for step in self.jobs[job]["steps"] if step.get("with", {}).get("path") == "source"]
@@ -406,7 +422,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("--finalize --github-token", text)
 
     def test_reusable_gate_artifacts_can_be_reuploaded_on_retry(self) -> None:
-        for name in ("compliance.yml", "real-workloads.yml"):
+        for name in ("compliance.yml", "real-workloads.yml", "cross-platform-sandbox.yml"):
             workflow = yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
             for job in workflow["jobs"].values():
                 for step in job["steps"]:
@@ -418,6 +434,56 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("github.run_attempt", text)
         for job in ("publish-pypi", "publish-npm", "github-release"):
             self.assertFalse(self.jobs[job]["concurrency"]["cancel-in-progress"])
+
+
+class CrossPlatformSandboxWorkflowTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.workflow = yaml.safe_load((ROOT / ".github/workflows/cross-platform-sandbox.yml").read_text())
+        self.jobs = self.workflow["jobs"]
+
+    def test_reusable_workflow_checks_out_the_selected_source_in_every_job(self) -> None:
+        events = self.workflow.get("on", self.workflow.get(True))
+        self.assertEqual(set(events), {"pull_request", "push", "workflow_dispatch", "workflow_call"})
+        self.assertEqual(events["push"], {"branches": ["main"]})
+        source_ref = events["workflow_call"]["inputs"]["source_ref"]
+        self.assertEqual(source_ref["type"], "string")
+        self.assertFalse(source_ref["required"])
+        self.assertEqual(source_ref["default"], "")
+        self.assertEqual(self.workflow["permissions"], {"contents": "read"})
+        for job_name, job in self.jobs.items():
+            with self.subTest(job=job_name):
+                self.assertNotIn("continue-on-error", job)
+                self.assertNotIn("if", job)
+                checkouts = [step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@")]
+                self.assertTrue(checkouts)
+                for checkout in checkouts:
+                    self.assertEqual(checkout["with"]["ref"], "${{ inputs.source_ref || github.sha }}")
+                    self.assertFalse(checkout["with"]["persist-credentials"])
+                for step in job["steps"]:
+                    self.assertNotIn("continue-on-error", step)
+
+    def test_native_linux_and_platform_rejection_scopes_are_preserved(self) -> None:
+        native = self.jobs["native-posix"]
+        platforms = {entry["platform"]: entry for entry in native["strategy"]["matrix"]["include"]}
+        self.assertEqual(set(platforms), {"Linux", "Linux-ARM64", "macOS"})
+        for platform, architecture in (("Linux", "x86_64"), ("Linux-ARM64", "aarch64")):
+            self.assertEqual(platforms[platform]["scope"], "native isolation")
+            self.assertEqual(platforms[platform]["architecture"], architecture)
+        self.assertEqual(platforms["macOS"]["scope"], "native capability rejection")
+        self.assertEqual(native["env"]["CODING_TOOLS_SANDBOX_REQUIRE_NATIVE"], "1")
+        native_steps = native["steps"]
+        isolation = next(step for step in native_steps if "tests.test_sandbox_native" in step.get("run", ""))
+        self.assertNotIn("if", isolation)
+        self.assertIn("set -euo pipefail", isolation["run"])
+        proxy = next(step for step in native_steps if "tests.test_network_proxy" in step.get("run", ""))
+        self.assertEqual(proxy["if"], "runner.os == 'Linux'")
+        self.assertIn("set -euo pipefail", proxy["run"])
+        windows = self.jobs["windows-shells"]
+        self.assertIn("compatibility", windows["name"])
+        self.assertEqual(windows["strategy"]["matrix"]["shell"], ["cmd", "pwsh"])
+        rejection = next(step for step in windows["steps"] if "NativePlatformRejectionTests" in step.get("run", ""))
+        self.assertNotIn("if", rejection)
+        self.assertIn("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", rejection["run"])
 
 
 if __name__ == "__main__":
